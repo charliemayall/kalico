@@ -6,6 +6,22 @@ extern "C" {
 #include <stdint.h>
 }
 
+// Latched outcome of a nozzle-presence ringdown probe.
+enum class ringdown_status : uint8_t {
+    idle = 0,
+    running = 1,
+    valid = 2,
+    not_enough_peaks = 3,
+    interval_bad = 4,
+    aborted = 5,
+};
+
+enum class nozzle_presence : uint8_t {
+    unknown = 0,
+    present = 1,
+    absent = 2,
+};
+
 struct coil_driver {
     // Maximum number of fired cycles per 512-cycle frame (0 = no limit).
     uint32_t duty_limit{0};
@@ -50,6 +66,35 @@ struct coil_driver {
     // Send the drive timings currently in effect to the host.
     void
     report_params();
+
+    // --- Nozzle presence via LC ringdown ---
+
+    // Configure continuous probe + optional heat gate. Decays are unitless
+    // ratios (Prusa-style). Periods are milliseconds.
+    void
+    set_ringdown_params(bool enable, bool heat_gate, float present_decay,
+                        float absent_decay, uint32_t idle_ms, uint32_t heat_ms);
+
+    // Start a oneshot ringdown probe. Fails closed if tune is active or coil
+    // timings are not set. report=true sends indx_nozzle_presence when done.
+    void
+    start_ringdown(bool report);
+
+    bool
+    ringdown_active();
+
+    // Advance the ringdown state machine; also starts background probes when
+    // enabled. heating=true selects the longer recheck period.
+    void
+    ringdown_step(bool heating);
+
+    // Last latched presence classification (unknown until a valid probe).
+    nozzle_presence
+    get_nozzle_presence();
+
+    // Send latched ringdown outcome to the host.
+    void
+    report_ringdown_status();
 };
 
 coil_driver

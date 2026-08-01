@@ -60,6 +60,9 @@ indx_heater::run() {
     } else {
         this->state.max_power_cycles = 0;
     }
+    // Background ringdown (when enabled) runs between control updates. Heating
+    // selects the slower recheck cadence so probe energy stays small.
+    this->coil_driver_inst.ringdown_step(output > 0.0f);
     this->coil_driver_inst.set_duty(output);
 
     this->state.power_sum += output;
@@ -367,6 +370,46 @@ command_indx_query_coil_driver_params(uint32_t *args) {
 DECL_COMMAND(command_indx_query_coil_driver_params,
              "indx_query_coil_driver_params");
 
+// Start a oneshot LC ringdown nozzle-presence probe.
+extern "C" void
+command_indx_ringdown_probe(uint32_t *args) {
+    (void)args;
+    if (!indx_heater_instance)
+        return;
+    indx_heater_instance->coil_driver_inst.start_ringdown(true);
+}
+DECL_COMMAND(command_indx_ringdown_probe, "indx_ringdown_probe");
+
+// Poll latched ringdown outcome (replies indx_nozzle_presence).
+extern "C" void
+command_indx_query_ringdown(uint32_t *args) {
+    (void)args;
+    if (!indx_heater_instance)
+        return;
+    indx_heater_instance->coil_driver_inst.report_ringdown_status();
+}
+DECL_COMMAND(command_indx_query_ringdown, "indx_query_ringdown");
+
+// Configure continuous ringdown + optional heat gate.
+// present/absent decay are float bits; idle_ms/heat_ms are milliseconds.
+extern "C" void
+command_indx_set_ringdown_params(uint32_t *args) {
+    if (!indx_heater_instance)
+        return;
+    bool enable = args[0] != 0;
+    bool heat_gate = args[1] != 0;
+    auto present_decay = *reinterpret_cast<float *>(&args[2]);
+    auto absent_decay = *reinterpret_cast<float *>(&args[3]);
+    uint32_t idle_ms = args[4];
+    uint32_t heat_ms = args[5];
+    indx_heater_instance->coil_driver_inst.set_ringdown_params(
+        enable, heat_gate, present_decay, absent_decay, idle_ms, heat_ms);
+}
+DECL_COMMAND(
+    command_indx_set_ringdown_params,
+    "indx_set_ringdown_params enable=%c heat_gate=%c present_decay=%u "
+    "absent_decay=%u idle_ms=%u heat_ms=%u");
+
 extern "C" void
 command_indx_led_force_color(uint32_t *args) {
     if (!indx_heater_instance)
@@ -431,11 +474,16 @@ indx_heater_task(void) {
         return;
     }
 
-    // Pump the auto-tuner every scheduler pass while it runs, so bounded test
-    // bursts fire back to back. Cheap flag check otherwise.
+    // Pump the auto-tuner / ringdown every scheduler pass while active, so
+    // bounded test bursts fire back to back. Cheap flag check otherwise.
     auto &coil = indx_heater_instance->coil_driver_inst;
-    if (coil.tune_active() && !sched_is_shutdown()) {
-        coil.tune_step();
+    if (!sched_is_shutdown()) {
+        if (coil.tune_active()) {
+            coil.tune_step();
+        }
+        if (coil.ringdown_active()) {
+            coil.ringdown_step(false);
+        }
     }
 
     if (!sched_check_wake(&indx_heater_wake)) {

@@ -315,6 +315,99 @@ struct tuner_state {
 
 static tuner_state tuner;
 
+// --- Nozzle presence ringdown (Prusa-style decay of LC resonance) ---
+
+static constexpr uint32_t RINGDOWN_SAMPLE_STEP = 16;
+static constexpr uint32_t RINGDOWN_N_SAMPLES = 64;
+static constexpr uint8_t RINGDOWN_AVG_PEAKS = 3;
+static constexpr uint32_t RINGDOWN_TIMEOUT_US = 2000000;
+static constexpr float RINGDOWN_ZERO_MARGIN_V = 1.0f;
+// Default decay thresholds from Prusa CORE One INDX reference measurements;
+// re-characterise on Bondtech open hardware before enabling heat_gate.
+static constexpr float RINGDOWN_PRESENT_DECAY_DEFAULT = 0.095f;
+static constexpr float RINGDOWN_ABSENT_DECAY_DEFAULT = 0.04f;
+static constexpr uint32_t RINGDOWN_IDLE_MS_DEFAULT = 100;
+static constexpr uint32_t RINGDOWN_HEAT_MS_DEFAULT = 500;
+
+enum class ringdown_phase : uint8_t {
+    idle,
+    pause_wait,
+    sample,
+    analyze,
+    done,
+};
+
+struct ringdown_config {
+    bool enable{false};
+    bool heat_gate{false};
+    float present_decay{RINGDOWN_PRESENT_DECAY_DEFAULT};
+    float absent_decay{RINGDOWN_ABSENT_DECAY_DEFAULT};
+    uint32_t idle_ms{RINGDOWN_IDLE_MS_DEFAULT};
+    uint32_t heat_ms{RINGDOWN_HEAT_MS_DEFAULT};
+};
+
+struct ringdown_state {
+    ringdown_phase phase{ringdown_phase::idle};
+    ringdown_status status{ringdown_status::idle};
+    nozzle_presence presence{nozzle_presence::unknown};
+    bool want_report{false};
+    bool burst_in_flight{false};
+    uint32_t next_fire_time{0};
+    uint32_t ov_count_at_start{0};
+    uint32_t deadline{0};
+    uint32_t sample_idx{0};
+    uint32_t saved_pending_on_cycles{0};
+    uint32_t saved_on_ticks{0};
+    uint32_t saved_on_ticks_first{0};
+    uint32_t saved_off_ticks{0};
+    float decay{0.0f};
+    uint32_t interval_ticks{0};
+    uint32_t next_schedule_time{0};
+
+    // Shared with TCC3/ADC ISRs (mirrors tuner test-burst fields).
+    volatile bool test_active{false};
+    volatile uint32_t cycles_done{0};
+    volatile uint32_t stop_after{0};
+    volatile bool burst_done{false};
+    volatile bool adc_active{false};
+    volatile bool adc_capture_armed{false};
+    volatile uint16_t adc_sample{0};
+
+    bool
+    active() {
+        return phase != ringdown_phase::idle;
+    }
+    void
+    start(bool report);
+    void
+    step();
+    void
+    abort();
+    void
+    finish(ringdown_status s);
+    void
+    fire_burst();
+    bool
+    on_drive_overflow();
+    bool
+    capture_adc_sample(uint16_t result);
+    burst_status
+    burst_poll();
+    void
+    adc_arm();
+    void
+    adc_restore();
+    void
+    analyze();
+    void
+    restore_drive();
+};
+
+static ringdown_state ringdown;
+static ringdown_config ringdown_cfg;
+static nozzle_presence last_presence{nozzle_presence::unknown};
+static uint16_t ringdown_samples[RINGDOWN_N_SAMPLES];
+
 // IRQ declarations and assert correct indices.
 
 static_assert(FEEDBACK_ADC_1_IRQn == 121);
@@ -396,10 +489,19 @@ coil_driver::set_duty(float duty) {
     if (duty != 0.0f && tune_active()) {
         shutdown("INDX heater target set while coil tuning");
     }
+    if (duty != 0.0f && ringdown_active()) {
+        // Ringdown owns the tank briefly; drop the request rather than fault.
+        duty = 0.0f;
+    }
     // The coil timings have no default. Driving without first setting them
     // (explicitly or via a successful tune) is a fault.
     if (duty != 0.0f && !state.timings_valid) {
         shutdown("INDX heater started before coil timings were set");
+    }
+    // Optional safety gate: refuse to drive without a present nozzle.
+    if (duty != 0.0f && ringdown_cfg.enable && ringdown_cfg.heat_gate &&
+        last_presence != nozzle_presence::present) {
+        duty = 0.0f;
     }
 
     uint32_t cycles;
@@ -412,6 +514,12 @@ coil_driver::set_duty(float duty) {
     }
     if (this->duty_limit && cycles > this->duty_limit) {
         cycles = this->duty_limit;
+    }
+    // While a ringdown probe has paused heating, keep the requested duty
+    // latched for restore instead of programming the timer.
+    if (ringdown_active()) {
+        ringdown.saved_pending_on_cycles = cycles;
+        return;
     }
     state.pending_on_cycles = cycles;
 
@@ -494,6 +602,8 @@ driver_state::schedule_next_cycle() {
 extern "C" void
 TCC3_0_Handler(void) {
     DRIVE_TCC->INTFLAG.reg = TCC_INTFLAG_OVF;
+    if (ringdown.on_drive_overflow())
+        return;
     if (tuner.on_drive_overflow())
         return;
     state.schedule_next_cycle();
@@ -508,6 +618,8 @@ AC_Handler(void) {
 extern "C" void
 FEEDBACK_ADC_1_Handler(void) {
     uint16_t result = FEEDBACK_ADC->RESULT.reg;
+    if (ringdown.capture_adc_sample(result))
+        return;
     if (tuner.capture_adc_sample(result))
         return;
     current_sense.on_sample(result);
@@ -1125,7 +1237,7 @@ tuner_state::step() {
 
 void
 coil_driver::start_tune(bool want_details) {
-    if (tuner.active()) {
+    if (tuner.active() || ringdown.active()) {
         return;
     }
     if (state.pending_on_cycles != 0) {
@@ -1158,4 +1270,378 @@ coil_driver::report_params() {
     uint32_t off = state.period_minus_1 + 1 - on;
     sendf("indx_coil_driver_params time_on=%u time_off=%u time_on_first=%u",
           ticks_to_ns(on), ticks_to_ns(off), ticks_to_ns(state.on_ticks_first));
+}
+
+// ---------------------------------------------------------------------------
+// Ringdown nozzle-presence probe
+// ---------------------------------------------------------------------------
+
+void
+ringdown_state::adc_arm() {
+    FEEDBACK_ADC->INPUTCTRL.reg = ADC_INPUTCTRL_MUXPOS(DRAIN_SENSE_ADC_MUXPOS) |
+                                  ADC_INPUTCTRL_MUXNEG(0x18);
+    while (FEEDBACK_ADC->SYNCBUSY.bit.INPUTCTRL)
+        ;
+    adc_active = true;
+    EVSYS->USER[EVSYS_ID_USER_ADC1_START].reg =
+        DRIVE_TCC_TUNE_EVSYS_CHANNEL + 1;
+}
+
+void
+ringdown_state::adc_restore() {
+    FEEDBACK_ADC->INPUTCTRL.reg =
+        ADC_INPUTCTRL_MUXPOS(CURRENT_SENSE_ADC_MUXPOS) |
+        ADC_INPUTCTRL_MUXNEG(0x18);
+    while (FEEDBACK_ADC->SYNCBUSY.bit.INPUTCTRL)
+        ;
+    adc_active = false;
+    EVSYS->USER[EVSYS_ID_USER_ADC1_START].reg = ADC_TRIGGER_EVSYS_CHANNEL + 1;
+}
+
+void
+ringdown_state::fire_burst() {
+    cycles_done = 0;
+    stop_after = 1 + TUNE_TRAILING_OFF;
+    burst_done = false;
+    test_active = true;
+    state.pending_on_cycles = 1;
+    burst_in_flight = true;
+    state.arm_timer();
+}
+
+bool
+ringdown_state::on_drive_overflow() {
+    if (!test_active)
+        return false;
+
+    uint32_t started = cycles_done + 1;
+    cycles_done = started;
+
+    DRIVE_TCC->CCBUF[DRIVE_TCC_CC].reg = TCC_CCBUF_CCBUF(0);
+    DRIVE_TCC->PERBUF.reg = TCC_PERBUF_PERBUF(state.period_minus_1);
+
+    if (started >= stop_after) {
+        DRIVE_TCC->CTRLBSET.reg = TCC_CTRLBSET_CMD_STOP;
+        test_active = false;
+        burst_done = true;
+    }
+    return true;
+}
+
+bool
+ringdown_state::capture_adc_sample(uint16_t result) {
+    if (!adc_active)
+        return false;
+    if (adc_capture_armed) {
+        adc_sample = result;
+        adc_capture_armed = false;
+    }
+    return true;
+}
+
+burst_status
+ringdown_state::burst_poll() {
+    if (burst_in_flight) {
+        if (!burst_done)
+            return burst_status::busy;
+        burst_in_flight = false;
+        next_fire_time = timer_read_time() + timer_from_us(TUNE_SETTLE_US);
+        return burst_status::completed;
+    }
+    if (timer_is_before(timer_read_time(), next_fire_time))
+        return burst_status::busy;
+    return burst_status::ready;
+}
+
+void
+ringdown_state::restore_drive() {
+    if (adc_active)
+        adc_restore();
+    state.set_drive_ticks(saved_on_ticks, saved_on_ticks_first, saved_off_ticks);
+    state.pending_on_cycles = saved_pending_on_cycles;
+    bool idle = DRIVE_TCC->STATUS.bit.STOP || DRIVE_TCC->STATUS.bit.FAULT0;
+    if (saved_pending_on_cycles > 0 && idle) {
+        state.arm_timer();
+    }
+}
+
+void
+ringdown_state::abort() {
+    test_active = false;
+    burst_in_flight = false;
+    restore_drive();
+    presence = nozzle_presence::unknown;
+    last_presence = nozzle_presence::unknown;
+    finish(ringdown_status::aborted);
+}
+
+void
+ringdown_state::finish(ringdown_status s) {
+    status = s;
+    if (s == ringdown_status::valid) {
+        last_presence = presence;
+    } else if (s != ringdown_status::running) {
+        // Failed / aborted probes do not claim present.
+        if (presence == nozzle_presence::present)
+            presence = nozzle_presence::unknown;
+        last_presence = presence;
+    }
+    if (want_report) {
+        sendf("indx_nozzle_presence clock=%u status=%c presence=%c decay=%u "
+              "interval=%u",
+              timer_read_time(), (uint32_t)status, (uint32_t)presence,
+              (uint32_t)(decay * 1000000.0f + 0.5f), interval_ticks);
+    }
+    // Stamp completion time; ringdown_step() adds the idle/heat period.
+    next_schedule_time = timer_read_time();
+    phase = ringdown_phase::idle;
+}
+
+void
+ringdown_state::start(bool report) {
+    // Volatile ISR fields: reset explicitly (assignment of *this is ill-formed).
+    phase = ringdown_phase::pause_wait;
+    status = ringdown_status::running;
+    presence = nozzle_presence::unknown;
+    want_report = report;
+    burst_in_flight = false;
+    next_fire_time = timer_read_time() + timer_from_us(TUNE_SETTLE_US);
+    ov_count_at_start = state.overvoltage_count();
+    deadline = timer_read_time() + timer_from_us(RINGDOWN_TIMEOUT_US);
+    sample_idx = 0;
+    decay = 0.0f;
+    interval_ticks = 0;
+    test_active = false;
+    cycles_done = 0;
+    stop_after = 0;
+    burst_done = false;
+    adc_active = false;
+    adc_capture_armed = false;
+    adc_sample = 0;
+    saved_pending_on_cycles = state.pending_on_cycles;
+    saved_on_ticks = state.on_ticks;
+    saved_on_ticks_first = state.on_ticks_first;
+    saved_off_ticks = state.period_minus_1 + 1 - state.on_ticks;
+    // Pause continuous heating for the probe window.
+    state.pending_on_cycles = 0;
+}
+
+void
+ringdown_state::analyze() {
+    auto zero_threshold = volts_to_count(RINGDOWN_ZERO_MARGIN_V);
+
+    // Locate OFF/resonance start: first sample that leaves the ON floor.
+    int16_t off_start = -1;
+    for (uint32_t i = 0; i < RINGDOWN_N_SAMPLES; i++) {
+        if (ringdown_samples[i] >= zero_threshold) {
+            off_start = (int16_t)i;
+            break;
+        }
+    }
+    if (off_start < 0) {
+        presence = nozzle_presence::unknown;
+        restore_drive();
+        finish(ringdown_status::not_enough_peaks);
+        return;
+    }
+
+    // Collect local maxima in the ringdown window.
+    constexpr uint8_t max_peaks = 10;
+    uint16_t peaks[max_peaks];
+    uint16_t peak_idx[max_peaks];
+    uint8_t n_peaks = 0;
+    for (uint32_t i = (uint32_t)off_start + 1; i + 1 < RINGDOWN_N_SAMPLES; i++) {
+        int16_t slope1 = (int16_t)ringdown_samples[i] - (int16_t)ringdown_samples[i - 1];
+        int16_t slope2 = (int16_t)ringdown_samples[i + 1] - (int16_t)ringdown_samples[i];
+        if (slope1 >= 0 && slope2 < 0 && n_peaks < max_peaks) {
+            peaks[n_peaks] = ringdown_samples[i];
+            peak_idx[n_peaks] = (uint16_t)i;
+            n_peaks++;
+        }
+    }
+
+    // Skip distorted early peaks (same idea as Prusa).
+    uint8_t skip = 0;
+    while (skip + RINGDOWN_AVG_PEAKS + 1 < n_peaks) {
+        if (peaks[skip] < peaks[skip + 1]) {
+            skip++;
+            continue;
+        }
+        break;
+    }
+
+    if (n_peaks < skip + RINGDOWN_AVG_PEAKS + 1) {
+        presence = nozzle_presence::unknown;
+        restore_drive();
+        finish(ringdown_status::not_enough_peaks);
+        return;
+    }
+
+    float decay_sum = 0.0f;
+    uint32_t interval_sum = 0;
+    for (uint8_t i = skip; i < skip + RINGDOWN_AVG_PEAKS; i++) {
+        if (peaks[i] == 0) {
+            presence = nozzle_presence::unknown;
+            restore_drive();
+            finish(ringdown_status::not_enough_peaks);
+            return;
+        }
+        decay_sum += (float)peaks[i + 1] / (float)peaks[i];
+        interval_sum += peak_idx[i + 1] - peak_idx[i];
+    }
+    decay = 1.0f - (decay_sum / (float)RINGDOWN_AVG_PEAKS);
+    interval_ticks = (interval_sum / RINGDOWN_AVG_PEAKS) * RINGDOWN_SAMPLE_STEP;
+
+    // Loose sanity: interval should be on the order of a resonance half-cycle.
+    if (interval_ticks < 40 || interval_ticks > 2000) {
+        presence = nozzle_presence::unknown;
+        restore_drive();
+        finish(ringdown_status::interval_bad);
+        return;
+    }
+
+    if (decay >= ringdown_cfg.present_decay) {
+        presence = nozzle_presence::present;
+    } else if (decay < ringdown_cfg.absent_decay) {
+        presence = nozzle_presence::absent;
+    } else {
+        presence = nozzle_presence::unknown;
+    }
+
+    restore_drive();
+    finish(ringdown_status::valid);
+}
+
+void
+ringdown_state::step() {
+    if (phase == ringdown_phase::idle)
+        return;
+
+    if (state.overvoltage_count() != ov_count_at_start) {
+        abort();
+        return;
+    }
+    if (!timer_is_before(timer_read_time(), deadline)) {
+        abort();
+        return;
+    }
+
+    switch (phase) {
+    case ringdown_phase::pause_wait: {
+        // Wait until the drive timer has stopped after clearing duty.
+        bool idle = DRIVE_TCC->STATUS.bit.STOP || DRIVE_TCC->STATUS.bit.FAULT0;
+        if (!idle || timer_is_before(timer_read_time(), next_fire_time))
+            return;
+        // Soft single-cycle excitation using calibrated soft-start ON.
+        state.set_drive_ticks(saved_on_ticks_first, saved_on_ticks_first,
+                              saved_off_ticks);
+        adc_arm();
+        sample_idx = 0;
+        phase = ringdown_phase::sample;
+        return;
+    }
+    case ringdown_phase::sample: {
+        switch (burst_poll()) {
+        case burst_status::busy:
+            return;
+        case burst_status::completed:
+            ringdown_samples[sample_idx] = adc_sample;
+            if (++sample_idx >= RINGDOWN_N_SAMPLES) {
+                adc_restore();
+                phase = ringdown_phase::analyze;
+            }
+            return;
+        case burst_status::ready:
+            // Equivalent-time sample further into the soft-start OFF/resonance.
+            state.set_drive_ticks(saved_on_ticks_first, saved_on_ticks_first,
+                                  saved_off_ticks);
+            tune_set_cc0(sample_idx * RINGDOWN_SAMPLE_STEP);
+            adc_capture_armed = true;
+            fire_burst();
+            return;
+        }
+        return;
+    }
+    case ringdown_phase::analyze:
+        analyze();
+        return;
+    case ringdown_phase::done:
+    case ringdown_phase::idle:
+        break;
+    }
+}
+
+void
+coil_driver::set_ringdown_params(bool enable, bool heat_gate, float present_decay,
+                                 float absent_decay, uint32_t idle_ms,
+                                 uint32_t heat_ms) {
+    if (present_decay <= absent_decay) {
+        // Keep a hysteresis band; ignore invalid host updates.
+        return;
+    }
+    ringdown_cfg.enable = enable;
+    ringdown_cfg.heat_gate = heat_gate;
+    ringdown_cfg.present_decay = present_decay;
+    ringdown_cfg.absent_decay = absent_decay;
+    ringdown_cfg.idle_ms = idle_ms ? idle_ms : RINGDOWN_IDLE_MS_DEFAULT;
+    ringdown_cfg.heat_ms = heat_ms ? heat_ms : RINGDOWN_HEAT_MS_DEFAULT;
+}
+
+void
+coil_driver::start_ringdown(bool report) {
+    if (ringdown.active() || tuner.active())
+        return;
+    if (!state.timings_valid) {
+        // Fail closed: report unknown without driving.
+        last_presence = nozzle_presence::unknown;
+        ringdown.status = ringdown_status::aborted;
+        ringdown.presence = nozzle_presence::unknown;
+        ringdown.decay = 0.0f;
+        ringdown.interval_ticks = 0;
+        if (report) {
+            sendf("indx_nozzle_presence clock=%u status=%c presence=%c decay=%u "
+                  "interval=%u",
+                  timer_read_time(), (uint32_t)ringdown_status::aborted,
+                  (uint32_t)nozzle_presence::unknown, 0u, 0u);
+        }
+        return;
+    }
+    ringdown.start(report);
+}
+
+bool
+coil_driver::ringdown_active() {
+    return ringdown.active();
+}
+
+void
+coil_driver::ringdown_step(bool heating) {
+    if (ringdown.active()) {
+        ringdown.step();
+        return;
+    }
+    if (!ringdown_cfg.enable || tuner.active() || !state.timings_valid)
+        return;
+    uint32_t period_ms = heating ? ringdown_cfg.heat_ms : ringdown_cfg.idle_ms;
+    uint32_t due =
+        ringdown.next_schedule_time + timer_from_us(period_ms * 1000);
+    // next_schedule_time is set at finish; on first boot it is 0 so we fire.
+    if (ringdown.next_schedule_time != 0 &&
+        timer_is_before(timer_read_time(), due))
+        return;
+    start_ringdown(true);
+}
+
+nozzle_presence
+coil_driver::get_nozzle_presence() {
+    return last_presence;
+}
+
+void
+coil_driver::report_ringdown_status() {
+    sendf("indx_nozzle_presence clock=%u status=%c presence=%c decay=%u "
+          "interval=%u",
+          timer_read_time(), (uint32_t)ringdown.status,
+          (uint32_t)ringdown.presence,
+          (uint32_t)(ringdown.decay * 1000000.0f + 0.5f), ringdown.interval_ticks);
 }

@@ -348,6 +348,16 @@ The following information is available in the
 - `last_dock_measurement`: The result of the last INDX_DOCK_MEASURE
   command (None if no measurement has been taken). It is a dictionary
   containing the keys `x`, `y`, `position` and `axis_order`.
+- `nozzle_presence`: Latest LC ringdown classification (`present`,
+  `absent`, or `unknown`).
+- `nozzle_presence_decay`: Decay ratio from the last probe (float).
+- `nozzle_presence_interval`: Resonance peak interval in MCU ticks.
+- `nozzle_presence_status`: Probe outcome (`idle`, `running`, `valid`,
+  `not_enough_peaks`, `interval_bad`, `aborted`).
+- `nozzle_presence_age`: Seconds since the last completed probe, or
+  None if no probe has completed yet.
+- `ringdown_enable`: Whether continuous ringdown probing is enabled.
+- `ringdown_heat_gate`: Whether heating is gated on `present`.
 
 ## led
 

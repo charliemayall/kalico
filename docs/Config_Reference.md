@@ -6291,6 +6291,19 @@ mcu:
 #   Override the IR sensor tuning parameters stored in the sensor
 #   EEPROM. All three must be provided if any is given. These should
 #   not normally be set.
+#ringdown_enable: False
+#ringdown_heat_gate: False
+#ringdown_present_decay: 0.095
+#ringdown_absent_decay: 0.04
+#ringdown_idle_ms: 100
+#ringdown_heat_ms: 500
+#   LC ringdown nozzle-presence detection. When ringdown_enable is
+#   True the toolboard periodically fires a soft coil impulse and
+#   classifies coupling from resonance decay (present / absent /
+#   unknown). Defaults are taken from Prusa CORE One INDX reference
+#   values and must be re-characterised on Bondtech hardware before
+#   enabling ringdown_heat_gate (which refuses to heat unless
+#   presence is present). See INDX.md.
 ```
 
 ### [sx1509]

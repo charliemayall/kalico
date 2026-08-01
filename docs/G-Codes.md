@@ -1112,7 +1112,22 @@ override.
 #### INDX_SET_IR_SENSOR_PARAMS
 `INDX_SET_IR_SENSOR_PARAMS EXPONENT=<value> OBJ_GAIN=<value>
 BRACKET_GAIN=<value>`: Override the IR sensor tuning parameters
-stored in the sensor EEPROM. These should not normally be changed.
+stored in the sensor EEPROM. All three must be provided.
+
+#### INDX_RINGDOWN_PROBE
+`INDX_RINGDOWN_PROBE`: Fire a oneshot LC ringdown probe and report
+nozzle presence (`present` / `absent` / `unknown`), decay, and
+status. Requires calibrated coil timings (`INDX_CALIBRATE`). Useful
+for characterising decay thresholds before enabling continuous
+ringdown or the heat gate.
+
+#### INDX_SET_RINGDOWN_PARAMS
+`INDX_SET_RINGDOWN_PARAMS [ENABLE=0|1] [HEAT_GATE=0|1]
+[PRESENT_DECAY=<ratio>] [ABSENT_DECAY=<ratio>] [IDLE_MS=<ms>]
+[HEAT_MS=<ms>]`: Configure continuous ringdown probing and the
+optional heat gate. PRESENT_DECAY must be greater than ABSENT_DECAY.
+Updated values are staged for SAVE_CONFIG. Keep HEAT_GATE disabled
+until thresholds are characterised on your hardware (see INDX.md).
 
 #### INDX_SET_CYCLE_LIMIT
 `INDX_SET_CYCLE_LIMIT LIMIT=<value>`: Limit the coil driver duty
