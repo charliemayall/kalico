@@ -371,14 +371,15 @@ DECL_COMMAND(command_indx_query_coil_driver_params,
              "indx_query_coil_driver_params");
 
 // Start a oneshot LC ringdown nozzle-presence probe.
+// args[0]: dump - stream capture buffer + peaks before status report.
 extern "C" void
 command_indx_ringdown_probe(uint32_t *args) {
-    (void)args;
     if (!indx_heater_instance)
         return;
-    indx_heater_instance->coil_driver_inst.start_ringdown(true);
+    bool dump = args[0] != 0;
+    indx_heater_instance->coil_driver_inst.start_ringdown(true, dump);
 }
-DECL_COMMAND(command_indx_ringdown_probe, "indx_ringdown_probe");
+DECL_COMMAND(command_indx_ringdown_probe, "indx_ringdown_probe dump=%c");
 
 // Poll latched ringdown outcome (replies indx_nozzle_presence).
 extern "C" void

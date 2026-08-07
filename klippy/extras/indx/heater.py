@@ -28,6 +28,7 @@ COIL_TUNE_STATUS_RUNNING = 1
 COIL_TUNE_TIMEOUT = 15.0  # seconds. The MCU self-aborts a stuck tune at 10 s
 COIL_TUNE_POLL_INTERVAL = 0.2  # seconds between latched-status polls
 COIL_TUNE_WAVE_PATH = "/tmp/indx_coil_waveform.csv"
+RINGDOWN_WAVE_PATH = "/tmp/indx_ringdown_waveform.csv"
 
 # Mirrors MCU ringdown_status / nozzle_presence enums.
 RINGDOWN_STATUS = {
@@ -453,7 +454,7 @@ class IndxToolboardHeater:
             cq=self.cmd_queue,
         )
         self.ringdown_probe_cmd = mcu.lookup_command(
-            "indx_ringdown_probe", cq=self.cmd_queue
+            "indx_ringdown_probe dump=%c", cq=self.cmd_queue
         )
         self.query_ringdown_cmd = mcu.lookup_query_command(
             "indx_query_ringdown",
@@ -599,17 +600,84 @@ class IndxToolboardHeater:
                 "INDX ringdown requires calibrated coil timings. "
                 "Run INDX_CALIBRATE first."
             )
+        dump = gcmd.get_int("DUMP", 0, minval=0, maxval=1)
         reactor = self.toolboard.printer.get_reactor()
-        self.ringdown_probe_cmd.send([])
-        deadline = reactor.monotonic() + RINGDOWN_PROBE_TIMEOUT
-        result = None
-        while True:
-            result = self.query_ringdown_cmd.send([])
-            if result["status"] != RINGDOWN_STATUS_RUNNING:
-                break
-            if reactor.monotonic() > deadline:
-                raise gcmd.error("INDX ringdown probe timed out")
-            reactor.pause(reactor.monotonic() + RINGDOWN_PROBE_POLL_INTERVAL)
+        mcu = self.toolboard.mcu
+        samples = []
+        peaks = []
+        meta = {}
+        wave = peak = meta_resp = None
+        if dump:
+            wave = compat.register_response(
+                mcu,
+                lambda p: samples.append(
+                    (p["index"], p["ns"], p["counts"], p["mv"])
+                ),
+                "indx_ringdown_wave index=%u ns=%u counts=%u mv=%u",
+            )
+            peak = compat.register_response(
+                mcu,
+                lambda p: peaks.append(
+                    (p["index"], p["sample"], p["counts"], p["mv"])
+                ),
+                "indx_ringdown_peak index=%c sample=%u counts=%u mv=%u",
+            )
+            meta_resp = compat.register_response(
+                mcu,
+                lambda p: meta.update(p),
+                "indx_ringdown_meta off_start=%i zero_mv=%u n_peaks=%c "
+                "status=%c",
+            )
+        try:
+            self.ringdown_probe_cmd.send([dump])
+            timeout = RINGDOWN_PROBE_TIMEOUT
+            if dump:
+                timeout += 5.0
+            deadline = reactor.monotonic() + timeout
+            result = None
+            while True:
+                result = self.query_ringdown_cmd.send([])
+                if result["status"] != RINGDOWN_STATUS_RUNNING:
+                    break
+                if reactor.monotonic() > deadline:
+                    raise gcmd.error("INDX ringdown probe timed out")
+                reactor.pause(
+                    reactor.monotonic() + RINGDOWN_PROBE_POLL_INTERVAL
+                )
+        finally:
+            if wave is not None:
+                wave.unregister()
+            if peak is not None:
+                peak.unregister()
+            if meta_resp is not None:
+                meta_resp.unregister()
+            if dump:
+                with open(RINGDOWN_WAVE_PATH, "w") as f:
+                    f.write("# off_start=%s zero_mv=%s n_peaks=%s status=%s\n"
+                            % (
+                                meta.get("off_start", ""),
+                                meta.get("zero_mv", ""),
+                                meta.get("n_peaks", ""),
+                                meta.get("status", ""),
+                            ))
+                    f.write("index,ns,counts,mv,is_peak\n")
+                    peak_samples = {p[1] for p in peaks}
+                    for index, ns, counts, mv in samples:
+                        is_peak = 1 if index in peak_samples else 0
+                        f.write(
+                            "%d,%d,%d,%d,%d\n"
+                            % (index, ns, counts, mv, is_peak)
+                        )
+                    f.write("# peaks: index,sample,counts,mv\n")
+                    for index, sample, counts, mv in peaks:
+                        f.write(
+                            "# peak,%d,%d,%d,%d\n"
+                            % (index, sample, counts, mv)
+                        )
+                gcmd.respond_info(
+                    "INDX ringdown waveform (%d samples, %d peaks) saved to %s"
+                    % (len(samples), len(peaks), RINGDOWN_WAVE_PATH)
+                )
         self._apply_ringdown_result(result)
         if result["status"] == 0:  # idle - command never started
             raise gcmd.error(

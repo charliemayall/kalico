@@ -341,6 +341,7 @@ enum class ringdown_phase : uint8_t {
     pause_wait,
     sample,
     analyze,
+    dump,
     done,
 };
 
@@ -363,11 +364,14 @@ struct ringdown_state {
     ringdown_status status{ringdown_status::idle};
     nozzle_presence presence{nozzle_presence::unknown};
     bool want_report{false};
+    bool want_dump{false};
     bool burst_in_flight{false};
     uint32_t next_fire_time{0};
     uint32_t ov_count_at_start{0};
     uint32_t deadline{0};
     uint32_t sample_idx{0};
+    uint32_t dump_idx{0};
+    uint32_t dump_count{0};
     uint32_t saved_pending_on_cycles{0};
     uint32_t saved_on_ticks{0};
     uint32_t saved_on_ticks_first{0};
@@ -375,6 +379,10 @@ struct ringdown_state {
     float decay{0.0f};
     uint32_t interval_ticks{0};
     uint8_t n_peaks{0};
+    int16_t off_start{-1};
+    ringdown_status pending_status{ringdown_status::idle};
+    uint16_t peak_counts[10]{};
+    uint16_t peak_sample_idx[10]{};
     uint32_t next_schedule_time{0};
 
     // Shared with TCC3/ADC ISRs (mirrors tuner test-burst fields).
@@ -391,13 +399,15 @@ struct ringdown_state {
         return phase != ringdown_phase::idle;
     }
     void
-    start(bool report);
+    start(bool report, bool dump);
     void
     step();
     void
     abort(ringdown_status s);
     void
     finish(ringdown_status s);
+    void
+    schedule_finish_or_dump(ringdown_status s);
     void
     fire_burst();
     bool
@@ -1387,6 +1397,25 @@ ringdown_state::abort(ringdown_status s) {
     restore_drive();
     presence = nozzle_presence::unknown;
     last_presence = nozzle_presence::unknown;
+    // Already dumping: finish with the abort status (do not restart dump).
+    if (phase == ringdown_phase::dump) {
+        finish(s);
+        return;
+    }
+    // Dump whatever was captured so far (may be empty on early abort).
+    dump_count = sample_idx < RINGDOWN_N_SAMPLES ? sample_idx : RINGDOWN_N_SAMPLES;
+    schedule_finish_or_dump(s);
+}
+
+void
+ringdown_state::schedule_finish_or_dump(ringdown_status s) {
+    pending_status = s;
+    if (want_dump) {
+        dump_idx = 0;
+        next_fire_time = timer_read_time();
+        phase = ringdown_phase::dump;
+        return;
+    }
     finish(s);
 }
 
@@ -1430,20 +1459,33 @@ ringdown_state::excite_on_ticks() {
 }
 
 void
-ringdown_state::start(bool report) {
+ringdown_state::start(bool report, bool dump) {
     // Volatile ISR fields: reset explicitly (assignment of *this is ill-formed).
     phase = ringdown_phase::pause_wait;
     status = ringdown_status::running;
     presence = nozzle_presence::unknown;
     want_report = report;
+    want_dump = dump;
     burst_in_flight = false;
     next_fire_time = timer_read_time() + timer_from_us(TUNE_SETTLE_US);
     ov_count_at_start = state.overvoltage_count();
-    deadline = timer_read_time() + timer_from_us(RINGDOWN_TIMEOUT_US);
+    // Dump streaming adds ~3 ms per sample; give the deadline headroom.
+    uint32_t timeout_us = RINGDOWN_TIMEOUT_US;
+    if (dump)
+        timeout_us += RINGDOWN_N_SAMPLES * TUNE_DUMP_INTERVAL_US + 50000;
+    deadline = timer_read_time() + timer_from_us(timeout_us);
     sample_idx = 0;
+    dump_idx = 0;
+    dump_count = 0;
     decay = 0.0f;
     interval_ticks = 0;
     n_peaks = 0;
+    off_start = -1;
+    pending_status = ringdown_status::idle;
+    for (uint8_t i = 0; i < 10; i++) {
+        peak_counts[i] = 0;
+        peak_sample_idx[i] = 0;
+    }
     test_active = false;
     cycles_done = 0;
     stop_after = 0;
@@ -1463,9 +1505,10 @@ void
 ringdown_state::analyze() {
     auto zero_threshold = volts_to_count(ringdown_cfg.zero_margin_v);
     n_peaks = 0;
+    off_start = -1;
+    dump_count = RINGDOWN_N_SAMPLES;
 
     // Locate OFF/resonance start: first sample that leaves the ON floor.
-    int16_t off_start = -1;
     for (uint32_t i = 0; i < RINGDOWN_N_SAMPLES; i++) {
         if (ringdown_samples[i] >= zero_threshold) {
             off_start = (int16_t)i;
@@ -1475,21 +1518,19 @@ ringdown_state::analyze() {
     if (off_start < 0) {
         presence = nozzle_presence::unknown;
         restore_drive();
-        finish(ringdown_status::not_enough_peaks);
+        schedule_finish_or_dump(ringdown_status::not_enough_peaks);
         return;
     }
 
     // Collect local maxima in the ringdown window.
     constexpr uint8_t max_peaks = 10;
-    uint16_t peaks[max_peaks];
-    uint16_t peak_idx[max_peaks];
     uint8_t found = 0;
     for (uint32_t i = (uint32_t)off_start + 1; i + 1 < RINGDOWN_N_SAMPLES; i++) {
         int16_t slope1 = (int16_t)ringdown_samples[i] - (int16_t)ringdown_samples[i - 1];
         int16_t slope2 = (int16_t)ringdown_samples[i + 1] - (int16_t)ringdown_samples[i];
         if (slope1 >= 0 && slope2 < 0 && found < max_peaks) {
-            peaks[found] = ringdown_samples[i];
-            peak_idx[found] = (uint16_t)i;
+            peak_counts[found] = ringdown_samples[i];
+            peak_sample_idx[found] = (uint16_t)i;
             found++;
         }
     }
@@ -1498,7 +1539,7 @@ ringdown_state::analyze() {
     // Skip distorted early peaks (same idea as Prusa).
     uint8_t skip = 0;
     while (skip + RINGDOWN_AVG_PEAKS + 1 < found) {
-        if (peaks[skip] < peaks[skip + 1]) {
+        if (peak_counts[skip] < peak_counts[skip + 1]) {
             skip++;
             continue;
         }
@@ -1508,21 +1549,21 @@ ringdown_state::analyze() {
     if (found < skip + RINGDOWN_AVG_PEAKS + 1) {
         presence = nozzle_presence::unknown;
         restore_drive();
-        finish(ringdown_status::not_enough_peaks);
+        schedule_finish_or_dump(ringdown_status::not_enough_peaks);
         return;
     }
 
     float decay_sum = 0.0f;
     uint32_t interval_sum = 0;
     for (uint8_t i = skip; i < skip + RINGDOWN_AVG_PEAKS; i++) {
-        if (peaks[i] == 0) {
+        if (peak_counts[i] == 0) {
             presence = nozzle_presence::unknown;
             restore_drive();
-            finish(ringdown_status::not_enough_peaks);
+            schedule_finish_or_dump(ringdown_status::not_enough_peaks);
             return;
         }
-        decay_sum += (float)peaks[i + 1] / (float)peaks[i];
-        interval_sum += peak_idx[i + 1] - peak_idx[i];
+        decay_sum += (float)peak_counts[i + 1] / (float)peak_counts[i];
+        interval_sum += peak_sample_idx[i + 1] - peak_sample_idx[i];
     }
     decay = 1.0f - (decay_sum / (float)RINGDOWN_AVG_PEAKS);
     interval_ticks = (interval_sum / RINGDOWN_AVG_PEAKS) * RINGDOWN_SAMPLE_STEP;
@@ -1532,7 +1573,7 @@ ringdown_state::analyze() {
         interval_ticks > ringdown_cfg.max_interval) {
         presence = nozzle_presence::unknown;
         restore_drive();
-        finish(ringdown_status::interval_bad);
+        schedule_finish_or_dump(ringdown_status::interval_bad);
         return;
     }
 
@@ -1545,7 +1586,7 @@ ringdown_state::analyze() {
     }
 
     restore_drive();
-    finish(ringdown_status::valid);
+    schedule_finish_or_dump(ringdown_status::valid);
 }
 
 void
@@ -1603,6 +1644,41 @@ ringdown_state::step() {
     case ringdown_phase::analyze:
         analyze();
         return;
+    case ringdown_phase::dump: {
+        // Stream capture + peaks for host CSV (diagnostic; drops ok).
+        if (timer_is_before(timer_read_time(), next_fire_time))
+            return;
+        if (dump_idx < dump_count) {
+            sendf("indx_ringdown_wave index=%u ns=%u counts=%u mv=%u", dump_idx,
+                  ticks_to_ns(dump_idx * RINGDOWN_SAMPLE_STEP),
+                  (uint32_t)ringdown_samples[dump_idx],
+                  counts_to_mv(ringdown_samples[dump_idx]));
+            dump_idx++;
+            next_fire_time =
+                timer_read_time() + timer_from_us(TUNE_DUMP_INTERVAL_US);
+            return;
+        }
+        // After samples, stream detected peaks once (reuse dump_idx offset).
+        uint32_t peak_i = dump_idx - dump_count;
+        if (peak_i < n_peaks) {
+            sendf("indx_ringdown_peak index=%c sample=%u counts=%u mv=%u",
+                  peak_i, (uint32_t)peak_sample_idx[peak_i],
+                  (uint32_t)peak_counts[peak_i],
+                  counts_to_mv(peak_counts[peak_i]));
+            dump_idx++;
+            next_fire_time =
+                timer_read_time() + timer_from_us(TUNE_DUMP_INTERVAL_US);
+            return;
+        }
+        // Meta once at end so the host can annotate the CSV header/comments.
+        sendf("indx_ringdown_meta off_start=%i zero_mv=%u n_peaks=%c "
+              "status=%c",
+              (int32_t)off_start,
+              (uint32_t)(ringdown_cfg.zero_margin_v * 1000.0f + 0.5f),
+              (uint32_t)n_peaks, (uint32_t)pending_status);
+        finish(pending_status);
+        return;
+    }
     case ringdown_phase::done:
     case ringdown_phase::idle:
         break;
@@ -1644,7 +1720,7 @@ coil_driver::set_ringdown_params(bool enable, bool heat_gate, float present_deca
 }
 
 void
-coil_driver::start_ringdown(bool report) {
+coil_driver::start_ringdown(bool report, bool dump) {
     if (ringdown.active() || tuner.active())
         return;
     if (!state.timings_valid) {
@@ -1663,7 +1739,7 @@ coil_driver::start_ringdown(bool report) {
         }
         return;
     }
-    ringdown.start(report);
+    ringdown.start(report, dump);
 }
 
 bool
@@ -1686,7 +1762,7 @@ coil_driver::ringdown_step(bool heating) {
     if (ringdown.next_schedule_time != 0 &&
         timer_is_before(timer_read_time(), due))
         return;
-    start_ringdown(true);
+    start_ringdown(true, false);
 }
 
 nozzle_presence

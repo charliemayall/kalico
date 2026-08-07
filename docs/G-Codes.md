@@ -1115,13 +1115,17 @@ BRACKET_GAIN=<value>`: Override the IR sensor tuning parameters
 stored in the sensor EEPROM. All three must be provided.
 
 #### INDX_RINGDOWN_PROBE
-`INDX_RINGDOWN_PROBE`: Fire a oneshot LC ringdown probe and report
-nozzle presence (`present` / `absent` / `unknown`), decay, status,
-interval, and `n_peaks`. Requires calibrated coil timings
+`INDX_RINGDOWN_PROBE [DUMP=0|1]`: Fire a oneshot LC ringdown probe and
+report nozzle presence (`present` / `absent` / `unknown`), decay,
+status, interval, and `n_peaks`. Requires calibrated coil timings
 (`INDX_CALIBRATE`). Useful for characterising decay thresholds and
 excitation before enabling continuous ringdown or the heat gate.
 Status may be `valid`, `not_enough_peaks`, `interval_bad`,
-`overvoltage`, `timeout`, or `aborted`.
+`overvoltage`, `timeout`, or `aborted`. With `DUMP=1`, the MCU streams
+the capture buffer and detected peaks; the host writes
+`/tmp/indx_ringdown_waveform.csv` (index, ns, counts, mv, is_peak).
+Use this when seated and empty both report `decay=0` to inspect the
+waveform.
 
 #### INDX_SET_RINGDOWN_PARAMS
 `INDX_SET_RINGDOWN_PARAMS [ENABLE=0|1] [HEAT_GATE=0|1]

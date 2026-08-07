@@ -137,6 +137,9 @@ hardware:
 
 1. With coil timings calibrated, seat a tool and run
    `INDX_RINGDOWN_PROBE`. Note the reported decay and `n_peaks`.
+   If decay looks wrong (for example both seated and empty report
+   `decay=0` / `valid`), run `INDX_RINGDOWN_PROBE DUMP=1` and inspect
+   `/tmp/indx_ringdown_waveform.csv` on the host.
 2. Remove the tool (latch open / empty head) and probe again.
 3. If empty probes report `overvoltage`, lower `EXCITE_SCALE` (for
    example `INDX_SET_RINGDOWN_PARAMS EXCITE_SCALE=0.6`). If seated

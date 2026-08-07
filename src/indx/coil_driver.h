@@ -85,8 +85,9 @@ struct coil_driver {
 
     // Start a oneshot ringdown probe. Fails closed if tune is active or coil
     // timings are not set. report=true sends indx_nozzle_presence when done.
+    // dump=true streams the capture buffer (and peaks) before the status.
     void
-    start_ringdown(bool report);
+    start_ringdown(bool report, bool dump);
 
     bool
     ringdown_active();
