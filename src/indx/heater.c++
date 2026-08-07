@@ -390,8 +390,8 @@ command_indx_query_ringdown(uint32_t *args) {
 }
 DECL_COMMAND(command_indx_query_ringdown, "indx_query_ringdown");
 
-// Configure continuous ringdown + optional heat gate.
-// present/absent decay are float bits; idle_ms/heat_ms are milliseconds.
+// Configure continuous ringdown + optional heat gate + debug knobs.
+// present/absent decay and excite/zero_margin are float bits; periods in ms.
 extern "C" void
 command_indx_set_ringdown_params(uint32_t *args) {
     if (!indx_heater_instance)
@@ -402,13 +402,20 @@ command_indx_set_ringdown_params(uint32_t *args) {
     auto absent_decay = *reinterpret_cast<float *>(&args[3]);
     uint32_t idle_ms = args[4];
     uint32_t heat_ms = args[5];
+    auto excite_scale = *reinterpret_cast<float *>(&args[6]);
+    auto zero_margin_v = *reinterpret_cast<float *>(&args[7]);
+    bool abort_on_ov = args[8] != 0;
+    uint32_t min_interval = args[9];
+    uint32_t max_interval = args[10];
     indx_heater_instance->coil_driver_inst.set_ringdown_params(
-        enable, heat_gate, present_decay, absent_decay, idle_ms, heat_ms);
+        enable, heat_gate, present_decay, absent_decay, idle_ms, heat_ms,
+        excite_scale, zero_margin_v, abort_on_ov, min_interval, max_interval);
 }
 DECL_COMMAND(
     command_indx_set_ringdown_params,
     "indx_set_ringdown_params enable=%c heat_gate=%c present_decay=%u "
-    "absent_decay=%u idle_ms=%u heat_ms=%u");
+    "absent_decay=%u idle_ms=%u heat_ms=%u excite_scale=%u zero_margin_v=%u "
+    "abort_on_ov=%c min_interval=%u max_interval=%u");
 
 extern "C" void
 command_indx_led_force_color(uint32_t *args) {

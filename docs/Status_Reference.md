@@ -352,12 +352,21 @@ The following information is available in the
   `absent`, or `unknown`).
 - `nozzle_presence_decay`: Decay ratio from the last probe (float).
 - `nozzle_presence_interval`: Resonance peak interval in MCU ticks.
+- `nozzle_presence_n_peaks`: Number of local maxima found in the last
+  capture window.
 - `nozzle_presence_status`: Probe outcome (`idle`, `running`, `valid`,
-  `not_enough_peaks`, `interval_bad`, `aborted`).
+  `not_enough_peaks`, `interval_bad`, `aborted`, `overvoltage`,
+  `timeout`).
 - `nozzle_presence_age`: Seconds since the last completed probe, or
   None if no probe has completed yet.
 - `ringdown_enable`: Whether continuous ringdown probing is enabled.
 - `ringdown_heat_gate`: Whether heating is gated on `present`.
+- `ringdown_excite_scale`: Soft-start ON multiplier used for the probe
+  pulse.
+- `ringdown_zero_margin_v`: ADC floor (volts) for resonance start.
+- `ringdown_abort_on_ov`: Whether mid-probe overvoltage aborts.
+- `ringdown_min_interval` / `ringdown_max_interval`: Accepted
+  peak-interval window in MCU ticks.
 
 ## led
 

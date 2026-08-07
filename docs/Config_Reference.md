@@ -6297,6 +6297,19 @@ mcu:
 #ringdown_absent_decay: 0.04
 #ringdown_idle_ms: 100
 #ringdown_heat_ms: 500
+#ringdown_excite_scale: 1.0
+#   Multiplier on calibrated soft-start ON ticks for the probe pulse
+#   (0.05-2.0). Soften below 1.0 if empty-head probes trip overvoltage;
+#   raise above 1.0 if seated probes report not_enough_peaks.
+#ringdown_zero_margin_v: 1.0
+#   ADC floor in volts used to find the start of resonance after the
+#   excitation pulse. Lower if peaks are clipped below the floor.
+#ringdown_abort_on_ov: True
+#   When True (default), an overvoltage trip mid-probe finishes as
+#   status=overvoltage. Set False only while debugging capture after OV.
+#ringdown_min_interval: 40
+#ringdown_max_interval: 2000
+#   Accepted peak-to-peak interval in MCU ticks before status=interval_bad.
 #   LC ringdown nozzle-presence detection. When ringdown_enable is
 #   True the toolboard periodically fires a soft coil impulse and
 #   classifies coupling from resonance decay (present / absent /

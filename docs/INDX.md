@@ -136,13 +136,17 @@ CORE One INDX measurements and must be re-characterised on Bondtech
 hardware:
 
 1. With coil timings calibrated, seat a tool and run
-   `INDX_RINGDOWN_PROBE`. Note the reported decay.
+   `INDX_RINGDOWN_PROBE`. Note the reported decay and `n_peaks`.
 2. Remove the tool (latch open / empty head) and probe again.
-3. Optionally check a half-seated tool; expect `unknown` between the
+3. If empty probes report `overvoltage`, lower `EXCITE_SCALE` (for
+   example `INDX_SET_RINGDOWN_PARAMS EXCITE_SCALE=0.6`). If seated
+   probes report `not_enough_peaks`, try a higher `EXCITE_SCALE` or a
+   lower `ZERO_MARGIN_V`. Use `ABORT_ON_OV=0` only while debugging.
+4. Optionally check a half-seated tool; expect `unknown` between the
    two thresholds.
-4. Set `PRESENT_DECAY` / `ABSENT_DECAY` with a clear hysteresis gap via
+5. Set `PRESENT_DECAY` / `ABSENT_DECAY` with a clear hysteresis gap via
    `INDX_SET_RINGDOWN_PARAMS`, then `SAVE_CONFIG`.
-5. Only then consider `HEAT_GATE=1` / `ringdown_heat_gate: True`, which
+6. Only then consider `HEAT_GATE=1` / `ringdown_heat_gate: True`, which
    refuses to heat unless presence is `present`.
 
 Enable continuous probing with `ringdown_enable: True` (about every
