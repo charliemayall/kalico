@@ -322,7 +322,11 @@ static constexpr uint32_t RINGDOWN_N_SAMPLES = 64;
 static constexpr uint8_t RINGDOWN_AVG_PEAKS = 3;
 static constexpr uint32_t RINGDOWN_TIMEOUT_US = 2000000;
 static constexpr float RINGDOWN_ZERO_MARGIN_V_DEFAULT = 1.0f;
+// Only allow softening the soft-start pulse (never hotter than calibrated
+// coil_time_on_first). Raising excitation past soft-start is a board risk.
 static constexpr float RINGDOWN_EXCITE_SCALE_DEFAULT = 1.0f;
+static constexpr float RINGDOWN_EXCITE_SCALE_MIN = 0.05f;
+static constexpr float RINGDOWN_EXCITE_SCALE_MAX = 1.0f;
 static constexpr uint32_t RINGDOWN_MIN_INTERVAL_DEFAULT = 40;
 static constexpr uint32_t RINGDOWN_MAX_INTERVAL_DEFAULT = 2000;
 // Default decay thresholds from Prusa CORE One INDX reference measurements;
@@ -1412,15 +1416,16 @@ ringdown_state::finish(ringdown_status s) {
 uint32_t
 ringdown_state::excite_on_ticks() {
     float scale = ringdown_cfg.excite_scale;
-    if (scale < 0.05f)
-        scale = 0.05f;
-    if (scale > 2.0f)
-        scale = 2.0f;
+    if (scale < RINGDOWN_EXCITE_SCALE_MIN)
+        scale = RINGDOWN_EXCITE_SCALE_MIN;
+    if (scale > RINGDOWN_EXCITE_SCALE_MAX)
+        scale = RINGDOWN_EXCITE_SCALE_MAX;
     uint32_t ticks = (uint32_t)(saved_on_ticks_first * scale + 0.5f);
     if (ticks < 1)
         ticks = 1;
-    if (saved_on_ticks && ticks > saved_on_ticks)
-        ticks = saved_on_ticks;
+    // Never exceed calibrated soft-start ON (on_first), even if scale is wrong.
+    if (saved_on_ticks_first && ticks > saved_on_ticks_first)
+        ticks = saved_on_ticks_first;
     return ticks;
 }
 
@@ -1549,12 +1554,11 @@ ringdown_state::step() {
         return;
 
     if (state.overvoltage_count() != ov_count_at_start) {
-        if (ringdown_cfg.abort_on_ov) {
-            abort(ringdown_status::overvoltage);
-            return;
-        }
-        // Debug: keep going after OV; drive may already be faulted.
-        ov_count_at_start = state.overvoltage_count();
+        // Always stop on OV. The AC comparator already faulted the drive;
+        // continuing to arm bursts after that is unsafe. Status is
+        // overvoltage (not generic aborted) so the host can tell.
+        abort(ringdown_status::overvoltage);
+        return;
     }
     if (!timer_is_before(timer_read_time(), deadline)) {
         abort(ringdown_status::timeout);
@@ -1624,11 +1628,17 @@ coil_driver::set_ringdown_params(bool enable, bool heat_gate, float present_deca
     ringdown_cfg.absent_decay = absent_decay;
     ringdown_cfg.idle_ms = idle_ms ? idle_ms : RINGDOWN_IDLE_MS_DEFAULT;
     ringdown_cfg.heat_ms = heat_ms ? heat_ms : RINGDOWN_HEAT_MS_DEFAULT;
+    if (excite_scale < RINGDOWN_EXCITE_SCALE_MIN)
+        excite_scale = RINGDOWN_EXCITE_SCALE_MIN;
+    if (excite_scale > RINGDOWN_EXCITE_SCALE_MAX)
+        excite_scale = RINGDOWN_EXCITE_SCALE_MAX;
     ringdown_cfg.excite_scale = excite_scale;
     ringdown_cfg.zero_margin_v = zero_margin_v > 0.0f
                                      ? zero_margin_v
                                      : RINGDOWN_ZERO_MARGIN_V_DEFAULT;
-    ringdown_cfg.abort_on_ov = abort_on_ov;
+    // abort_on_ov is accepted for host compatibility but always enforced.
+    (void)abort_on_ov;
+    ringdown_cfg.abort_on_ov = true;
     ringdown_cfg.min_interval = min_interval;
     ringdown_cfg.max_interval = max_interval;
 }

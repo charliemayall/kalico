@@ -46,6 +46,7 @@ RINGDOWN_PRESENCE = {0: "unknown", 1: "present", 2: "absent"}
 RINGDOWN_PROBE_TIMEOUT = 5.0
 RINGDOWN_PROBE_POLL_INTERVAL = 0.05
 RINGDOWN_EXCITE_SCALE_DEFAULT = 1.0
+RINGDOWN_EXCITE_SCALE_MAX = 1.0
 RINGDOWN_ZERO_MARGIN_V_DEFAULT = 1.0
 RINGDOWN_MIN_INTERVAL_DEFAULT = 40
 RINGDOWN_MAX_INTERVAL_DEFAULT = 2000
@@ -264,7 +265,7 @@ class IndxToolboardHeater:
             "ringdown_excite_scale",
             default=RINGDOWN_EXCITE_SCALE_DEFAULT,
             above=0.05,
-            maxval=2.0,
+            maxval=RINGDOWN_EXCITE_SCALE_MAX,
         )
         self.ringdown_zero_margin_v = config.getfloat(
             "ringdown_zero_margin_v",
@@ -657,7 +658,7 @@ class IndxToolboardHeater:
             "EXCITE_SCALE",
             self.ringdown_excite_scale,
             above=0.05,
-            maxval=2.0,
+            maxval=RINGDOWN_EXCITE_SCALE_MAX,
         )
         self.ringdown_zero_margin_v = gcmd.get_float(
             "ZERO_MARGIN_V",

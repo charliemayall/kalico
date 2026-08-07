@@ -73,9 +73,10 @@ struct coil_driver {
 
     // Configure continuous probe, heat gate, and debug tuning knobs.
     // Decays are unitless ratios (Prusa-style). Periods are milliseconds.
-    // excite_scale multiplies the soft-start ON ticks for the probe pulse.
+    // excite_scale multiplies the soft-start ON ticks for the probe pulse
+    // (clamped to <= 1.0 so the pulse cannot exceed coil_time_on_first).
     // zero_margin_v is the ADC floor (volts) used to find resonance start.
-    // abort_on_ov=false keeps capturing after an OV trip (debug only).
+    // abort_on_ov is accepted from the host but OV always aborts the probe.
     void
     set_ringdown_params(bool enable, bool heat_gate, float present_decay,
                         float absent_decay, uint32_t idle_ms, uint32_t heat_ms,

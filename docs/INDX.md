@@ -140,8 +140,8 @@ hardware:
 2. Remove the tool (latch open / empty head) and probe again.
 3. If empty probes report `overvoltage`, lower `EXCITE_SCALE` (for
    example `INDX_SET_RINGDOWN_PARAMS EXCITE_SCALE=0.6`). If seated
-   probes report `not_enough_peaks`, try a higher `EXCITE_SCALE` or a
-   lower `ZERO_MARGIN_V`. Use `ABORT_ON_OV=0` only while debugging.
+   probes report `not_enough_peaks`, try a lower `ZERO_MARGIN_V`
+   (excitation cannot be raised above calibrated soft-start).
 4. Optionally check a half-seated tool; expect `unknown` between the
    two thresholds.
 5. Set `PRESENT_DECAY` / `ABSENT_DECAY` with a clear hysteresis gap via

@@ -1126,15 +1126,16 @@ Status may be `valid`, `not_enough_peaks`, `interval_bad`,
 #### INDX_SET_RINGDOWN_PARAMS
 `INDX_SET_RINGDOWN_PARAMS [ENABLE=0|1] [HEAT_GATE=0|1]
 [PRESENT_DECAY=<ratio>] [ABSENT_DECAY=<ratio>] [IDLE_MS=<ms>]
-[HEAT_MS=<ms>] [EXCITE_SCALE=<0.05-2.0>] [ZERO_MARGIN_V=<v>]
+[HEAT_MS=<ms>] [EXCITE_SCALE=<0.05-1.0>] [ZERO_MARGIN_V=<v>]
 [ABORT_ON_OV=0|1] [MIN_INTERVAL=<ticks>] [MAX_INTERVAL=<ticks>]`:
 Configure continuous ringdown probing, the optional heat gate, and
 debug knobs for Bondtech characterisation. PRESENT_DECAY must be
 greater than ABSENT_DECAY. EXCITE_SCALE multiplies the soft-start ON
-pulse; ZERO_MARGIN_V is the ADC floor for finding resonance start;
-ABORT_ON_OV=0 keeps capturing after an OV trip (debug only). Updated
-values are staged for SAVE_CONFIG. Keep HEAT_GATE disabled until
-thresholds are characterised on your hardware (see INDX.md).
+pulse but cannot exceed 1.0 (never hotter than coil_time_on_first).
+ZERO_MARGIN_V is the ADC floor for finding resonance start. ABORT_ON_OV
+is accepted for compatibility; the MCU always aborts on overvoltage.
+Updated values are staged for SAVE_CONFIG. Keep HEAT_GATE disabled
+until thresholds are characterised on your hardware (see INDX.md).
 
 #### INDX_SET_CYCLE_LIMIT
 `INDX_SET_CYCLE_LIMIT LIMIT=<value>`: Limit the coil driver duty

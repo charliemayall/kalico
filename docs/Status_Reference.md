@@ -361,10 +361,10 @@ The following information is available in the
   None if no probe has completed yet.
 - `ringdown_enable`: Whether continuous ringdown probing is enabled.
 - `ringdown_heat_gate`: Whether heating is gated on `present`.
-- `ringdown_excite_scale`: Soft-start ON multiplier used for the probe
-  pulse.
+- `ringdown_excite_scale`: Soft-start ON multiplier for the probe pulse
+  (max 1.0).
 - `ringdown_zero_margin_v`: ADC floor (volts) for resonance start.
-- `ringdown_abort_on_ov`: Whether mid-probe overvoltage aborts.
+- `ringdown_abort_on_ov`: Always treated as true on the MCU; OV aborts.
 - `ringdown_min_interval` / `ringdown_max_interval`: Accepted
   peak-interval window in MCU ticks.
 
