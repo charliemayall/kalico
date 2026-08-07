@@ -120,35 +120,36 @@ Use `INDX_CLEAR_FILAMENT` to reset the filament parameters, and
 
 ## Nozzle presence (LC ringdown)
 
-The toolboard can classify whether a steel nozzle is coupled to the
-induction coil by firing a soft single-cycle impulse and measuring how
-quickly the LC resonance decays. A seated nozzle absorbs energy
-(higher decay); an empty coil rings with lower decay. Ambiguous
-partial coupling is reported as `unknown`.
+The toolboard classifies whether a steel nozzle is coupled to the
+induction coil by firing a soft single-cycle impulse and measuring the
+**peak voltage of the first resonance lobe**. On Bondtech hardware a
+seated nozzle loads the coil (lower peak); an empty coil rings higher.
+Ambiguous values between the thresholds are reported as `unknown`.
 
 This is independent of load-cell latch preload: ringdown answers "is
 steel in the coil?", while a load cell answers "is the latch
 preloaded?".
 
-Defaults are off. Reference decay thresholds
-(`ringdown_present_decay` / `ringdown_absent_decay`) come from Prusa
-CORE One INDX measurements and must be re-characterised on Bondtech
-hardware:
+Defaults are off. Amplitude thresholds
+(`ringdown_present_peak_v` / `ringdown_absent_peak_v`) and
+`ringdown_excite_scale` (default 0.8) come from Bondtech characterisation
+and should be checked on your head before enabling the heat gate:
 
 1. With coil timings calibrated, seat a tool and run
-   `INDX_RINGDOWN_PROBE`. Note the reported decay and `n_peaks`.
-   If decay looks wrong (for example both seated and empty report
-   `decay=0` / `valid`), run `INDX_RINGDOWN_PROBE DUMP=1` and inspect
-   `/tmp/indx_ringdown_waveform.csv` on the host.
-2. Remove the tool (latch open / empty head) and probe again.
-3. If empty probes report `overvoltage`, lower `EXCITE_SCALE` (for
-   example `INDX_SET_RINGDOWN_PARAMS EXCITE_SCALE=0.6`). If seated
-   probes report `not_enough_peaks`, try a lower `ZERO_MARGIN_V`
-   (excitation cannot be raised above calibrated soft-start).
+   `INDX_RINGDOWN_PROBE`. Note the reported `peak_v` and presence.
+   If classification looks wrong, run `INDX_RINGDOWN_PROBE DUMP=1` and
+   inspect `/tmp/indx_ringdown_waveform.csv` on the host.
+2. Remove the tool (latch open / empty head) and probe again. Empty
+   peak should be clearly higher than seated.
+3. If empty probes report `overvoltage`, lower `EXCITE_SCALE` (do not
+   use 1.0 empty on Bondtech - it OV'd in characterisation). Soften
+   toward 0.7-0.8. Excitation cannot be raised above calibrated
+   soft-start (`EXCITE_SCALE` max 1.0).
 4. Optionally check a half-seated tool; expect `unknown` between the
-   two thresholds.
-5. Set `PRESENT_DECAY` / `ABSENT_DECAY` with a clear hysteresis gap via
-   `INDX_SET_RINGDOWN_PARAMS`, then `SAVE_CONFIG`.
+   two peak thresholds.
+5. Set `PRESENT_PEAK_V` / `ABSENT_PEAK_V` (present must be less than
+   absent) with a clear hysteresis gap via `INDX_SET_RINGDOWN_PARAMS`,
+   then `SAVE_CONFIG`. Defaults 87 V / 91 V suit EXCITE_SCALE=0.8.
 6. Only then consider `HEAT_GATE=1` / `ringdown_heat_gate: True`, which
    refuses to heat unless presence is `present`.
 

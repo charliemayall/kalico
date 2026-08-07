@@ -315,24 +315,23 @@ struct tuner_state {
 
 static tuner_state tuner;
 
-// --- Nozzle presence ringdown (Prusa-style decay of LC resonance) ---
+// --- Nozzle presence ringdown (first-lobe peak amplitude) ---
 
 static constexpr uint32_t RINGDOWN_SAMPLE_STEP = 16;
 static constexpr uint32_t RINGDOWN_N_SAMPLES = 64;
-static constexpr uint8_t RINGDOWN_AVG_PEAKS = 3;
 static constexpr uint32_t RINGDOWN_TIMEOUT_US = 2000000;
 static constexpr float RINGDOWN_ZERO_MARGIN_V_DEFAULT = 1.0f;
 // Only allow softening the soft-start pulse (never hotter than calibrated
 // coil_time_on_first). Raising excitation past soft-start is a board risk.
-static constexpr float RINGDOWN_EXCITE_SCALE_DEFAULT = 1.0f;
+// Default 0.8 from Bondtech characterisation (empty OV at 1.0).
+static constexpr float RINGDOWN_EXCITE_SCALE_DEFAULT = 0.8f;
 static constexpr float RINGDOWN_EXCITE_SCALE_MIN = 0.05f;
 static constexpr float RINGDOWN_EXCITE_SCALE_MAX = 1.0f;
-static constexpr uint32_t RINGDOWN_MIN_INTERVAL_DEFAULT = 40;
-static constexpr uint32_t RINGDOWN_MAX_INTERVAL_DEFAULT = 2000;
-// Default decay thresholds from Prusa CORE One INDX reference measurements;
-// re-characterise on Bondtech open hardware before enabling heat_gate.
-static constexpr float RINGDOWN_PRESENT_DECAY_DEFAULT = 0.095f;
-static constexpr float RINGDOWN_ABSENT_DECAY_DEFAULT = 0.04f;
+// Peak-voltage thresholds from Bondtech EXCITE_SCALE=0.8 sweep
+// (seated ~84 V, empty ~95 V). Re-characterise before heat_gate.
+static constexpr float RINGDOWN_PRESENT_PEAK_V_DEFAULT = 87.0f;
+static constexpr float RINGDOWN_ABSENT_PEAK_V_DEFAULT = 91.0f;
+static constexpr float RINGDOWN_MIN_PEAK_V_DEFAULT = 20.0f;
 static constexpr uint32_t RINGDOWN_IDLE_MS_DEFAULT = 100;
 static constexpr uint32_t RINGDOWN_HEAT_MS_DEFAULT = 500;
 
@@ -349,14 +348,13 @@ struct ringdown_config {
     bool enable{false};
     bool heat_gate{false};
     bool abort_on_ov{true};
-    float present_decay{RINGDOWN_PRESENT_DECAY_DEFAULT};
-    float absent_decay{RINGDOWN_ABSENT_DECAY_DEFAULT};
+    float present_peak_v{RINGDOWN_PRESENT_PEAK_V_DEFAULT};
+    float absent_peak_v{RINGDOWN_ABSENT_PEAK_V_DEFAULT};
+    float min_peak_v{RINGDOWN_MIN_PEAK_V_DEFAULT};
     float excite_scale{RINGDOWN_EXCITE_SCALE_DEFAULT};
     float zero_margin_v{RINGDOWN_ZERO_MARGIN_V_DEFAULT};
     uint32_t idle_ms{RINGDOWN_IDLE_MS_DEFAULT};
     uint32_t heat_ms{RINGDOWN_HEAT_MS_DEFAULT};
-    uint32_t min_interval{RINGDOWN_MIN_INTERVAL_DEFAULT};
-    uint32_t max_interval{RINGDOWN_MAX_INTERVAL_DEFAULT};
 };
 
 struct ringdown_state {
@@ -376,8 +374,7 @@ struct ringdown_state {
     uint32_t saved_on_ticks{0};
     uint32_t saved_on_ticks_first{0};
     uint32_t saved_off_ticks{0};
-    float decay{0.0f};
-    uint32_t interval_ticks{0};
+    uint32_t peak_mv{0};
     uint8_t n_peaks{0};
     int16_t off_start{-1};
     ringdown_status pending_status{ringdown_status::idle};
@@ -1431,10 +1428,9 @@ ringdown_state::finish(ringdown_status s) {
         last_presence = presence;
     }
     if (want_report) {
-        sendf("indx_nozzle_presence clock=%u status=%c presence=%c decay=%u "
-              "interval=%u n_peaks=%c",
-              timer_read_time(), (uint32_t)status, (uint32_t)presence,
-              (uint32_t)(decay * 1000000.0f + 0.5f), interval_ticks,
+        sendf("indx_nozzle_presence clock=%u status=%c presence=%c peak_mv=%u "
+              "n_peaks=%c",
+              timer_read_time(), (uint32_t)status, (uint32_t)presence, peak_mv,
               (uint32_t)n_peaks);
     }
     // Stamp completion time; ringdown_step() adds the idle/heat period.
@@ -1477,8 +1473,7 @@ ringdown_state::start(bool report, bool dump) {
     sample_idx = 0;
     dump_idx = 0;
     dump_count = 0;
-    decay = 0.0f;
-    interval_ticks = 0;
+    peak_mv = 0;
     n_peaks = 0;
     off_start = -1;
     pending_status = ringdown_status::idle;
@@ -1507,79 +1502,69 @@ ringdown_state::analyze() {
     n_peaks = 0;
     off_start = -1;
     dump_count = RINGDOWN_N_SAMPLES;
+    peak_mv = 0;
 
-    // Locate OFF/resonance start: first sample that leaves the ON floor.
+    // Absolute max of the capture - Bondtech shows one resonance lobe.
+    uint16_t max_counts = 0;
+    uint16_t max_idx = 0;
+    for (uint32_t i = 0; i < RINGDOWN_N_SAMPLES; i++) {
+        if (ringdown_samples[i] > max_counts) {
+            max_counts = ringdown_samples[i];
+            max_idx = (uint16_t)i;
+        }
+    }
+    peak_mv = counts_to_mv(max_counts);
+    float peak_v = (float)peak_mv / 1000.0f;
+
+    // DUMP annotation: first sample above zero_margin (may be floor noise).
     for (uint32_t i = 0; i < RINGDOWN_N_SAMPLES; i++) {
         if (ringdown_samples[i] >= zero_threshold) {
             off_start = (int16_t)i;
             break;
         }
     }
-    if (off_start < 0) {
-        presence = nozzle_presence::unknown;
-        restore_drive();
-        schedule_finish_or_dump(ringdown_status::not_enough_peaks);
-        return;
-    }
 
-    // Collect local maxima in the ringdown window.
+    // Local maxima for DUMP peak markers only (do not drive classification).
     constexpr uint8_t max_peaks = 10;
-    uint8_t found = 0;
-    for (uint32_t i = (uint32_t)off_start + 1; i + 1 < RINGDOWN_N_SAMPLES; i++) {
-        int16_t slope1 = (int16_t)ringdown_samples[i] - (int16_t)ringdown_samples[i - 1];
-        int16_t slope2 = (int16_t)ringdown_samples[i + 1] - (int16_t)ringdown_samples[i];
-        if (slope1 >= 0 && slope2 < 0 && found < max_peaks) {
-            peak_counts[found] = ringdown_samples[i];
-            peak_sample_idx[found] = (uint16_t)i;
-            found++;
+    if (off_start >= 0) {
+        for (uint32_t i = (uint32_t)off_start + 1; i + 1 < RINGDOWN_N_SAMPLES;
+             i++) {
+            int16_t slope1 =
+                (int16_t)ringdown_samples[i] - (int16_t)ringdown_samples[i - 1];
+            int16_t slope2 =
+                (int16_t)ringdown_samples[i + 1] - (int16_t)ringdown_samples[i];
+            if (slope1 >= 0 && slope2 < 0 && n_peaks < max_peaks) {
+                peak_counts[n_peaks] = ringdown_samples[i];
+                peak_sample_idx[n_peaks] = (uint16_t)i;
+                n_peaks++;
+            }
         }
     }
-    n_peaks = found;
-
-    // Skip distorted early peaks (same idea as Prusa).
-    uint8_t skip = 0;
-    while (skip + RINGDOWN_AVG_PEAKS + 1 < found) {
-        if (peak_counts[skip] < peak_counts[skip + 1]) {
-            skip++;
-            continue;
+    // Ensure the absolute max is marked even if slope detection missed it.
+    bool have_max = false;
+    for (uint8_t i = 0; i < n_peaks; i++) {
+        if (peak_sample_idx[i] == max_idx) {
+            have_max = true;
+            break;
         }
-        break;
+    }
+    if (!have_max && max_counts > 0 && n_peaks < max_peaks) {
+        peak_counts[n_peaks] = max_counts;
+        peak_sample_idx[n_peaks] = max_idx;
+        n_peaks++;
     }
 
-    if (found < skip + RINGDOWN_AVG_PEAKS + 1) {
+    if (peak_v < ringdown_cfg.min_peak_v) {
         presence = nozzle_presence::unknown;
         restore_drive();
         schedule_finish_or_dump(ringdown_status::not_enough_peaks);
         return;
     }
 
-    float decay_sum = 0.0f;
-    uint32_t interval_sum = 0;
-    for (uint8_t i = skip; i < skip + RINGDOWN_AVG_PEAKS; i++) {
-        if (peak_counts[i] == 0) {
-            presence = nozzle_presence::unknown;
-            restore_drive();
-            schedule_finish_or_dump(ringdown_status::not_enough_peaks);
-            return;
-        }
-        decay_sum += (float)peak_counts[i + 1] / (float)peak_counts[i];
-        interval_sum += peak_sample_idx[i + 1] - peak_sample_idx[i];
-    }
-    decay = 1.0f - (decay_sum / (float)RINGDOWN_AVG_PEAKS);
-    interval_ticks = (interval_sum / RINGDOWN_AVG_PEAKS) * RINGDOWN_SAMPLE_STEP;
-
-    // Loose sanity: interval should be on the order of a resonance half-cycle.
-    if (interval_ticks < ringdown_cfg.min_interval ||
-        interval_ticks > ringdown_cfg.max_interval) {
-        presence = nozzle_presence::unknown;
-        restore_drive();
-        schedule_finish_or_dump(ringdown_status::interval_bad);
-        return;
-    }
-
-    if (decay >= ringdown_cfg.present_decay) {
+    // Seated loads the coil → lower peak; empty → higher peak.
+    if (peak_v <= ringdown_cfg.present_peak_v) {
         presence = nozzle_presence::present;
-    } else if (decay < ringdown_cfg.absent_decay) {
+    } else if (peak_v >= ringdown_cfg.absent_peak_v) {
         presence = nozzle_presence::absent;
     } else {
         presence = nozzle_presence::unknown;
@@ -1672,10 +1657,10 @@ ringdown_state::step() {
         }
         // Meta once at end so the host can annotate the CSV header/comments.
         sendf("indx_ringdown_meta off_start=%i zero_mv=%u n_peaks=%c "
-              "status=%c",
+              "status=%c peak_mv=%u",
               (int32_t)off_start,
               (uint32_t)(ringdown_cfg.zero_margin_v * 1000.0f + 0.5f),
-              (uint32_t)n_peaks, (uint32_t)pending_status);
+              (uint32_t)n_peaks, (uint32_t)pending_status, peak_mv);
         finish(pending_status);
         return;
     }
@@ -1686,22 +1671,23 @@ ringdown_state::step() {
 }
 
 void
-coil_driver::set_ringdown_params(bool enable, bool heat_gate, float present_decay,
-                                 float absent_decay, uint32_t idle_ms,
+coil_driver::set_ringdown_params(bool enable, bool heat_gate, float present_peak_v,
+                                 float absent_peak_v, uint32_t idle_ms,
                                  uint32_t heat_ms, float excite_scale,
                                  float zero_margin_v, bool abort_on_ov,
-                                 uint32_t min_interval, uint32_t max_interval) {
-    if (present_decay <= absent_decay) {
+                                 float min_peak_v) {
+    if (!(present_peak_v < absent_peak_v)) {
         // Keep a hysteresis band; ignore invalid host updates.
         return;
     }
-    if (min_interval == 0 || max_interval <= min_interval) {
+    if (min_peak_v < 0.0f)
         return;
-    }
     ringdown_cfg.enable = enable;
     ringdown_cfg.heat_gate = heat_gate;
-    ringdown_cfg.present_decay = present_decay;
-    ringdown_cfg.absent_decay = absent_decay;
+    ringdown_cfg.present_peak_v = present_peak_v;
+    ringdown_cfg.absent_peak_v = absent_peak_v;
+    ringdown_cfg.min_peak_v = min_peak_v > 0.0f ? min_peak_v
+                                                : RINGDOWN_MIN_PEAK_V_DEFAULT;
     ringdown_cfg.idle_ms = idle_ms ? idle_ms : RINGDOWN_IDLE_MS_DEFAULT;
     ringdown_cfg.heat_ms = heat_ms ? heat_ms : RINGDOWN_HEAT_MS_DEFAULT;
     if (excite_scale < RINGDOWN_EXCITE_SCALE_MIN)
@@ -1715,8 +1701,6 @@ coil_driver::set_ringdown_params(bool enable, bool heat_gate, float present_deca
     // abort_on_ov is accepted for host compatibility but always enforced.
     (void)abort_on_ov;
     ringdown_cfg.abort_on_ov = true;
-    ringdown_cfg.min_interval = min_interval;
-    ringdown_cfg.max_interval = max_interval;
 }
 
 void
@@ -1728,14 +1712,13 @@ coil_driver::start_ringdown(bool report, bool dump) {
         last_presence = nozzle_presence::unknown;
         ringdown.status = ringdown_status::aborted;
         ringdown.presence = nozzle_presence::unknown;
-        ringdown.decay = 0.0f;
-        ringdown.interval_ticks = 0;
+        ringdown.peak_mv = 0;
         ringdown.n_peaks = 0;
         if (report) {
-            sendf("indx_nozzle_presence clock=%u status=%c presence=%c decay=%u "
-                  "interval=%u n_peaks=%c",
+            sendf("indx_nozzle_presence clock=%u status=%c presence=%c "
+                  "peak_mv=%u n_peaks=%c",
                   timer_read_time(), (uint32_t)ringdown_status::aborted,
-                  (uint32_t)nozzle_presence::unknown, 0u, 0u, 0u);
+                  (uint32_t)nozzle_presence::unknown, 0u, 0u);
         }
         return;
     }
@@ -1772,10 +1755,9 @@ coil_driver::get_nozzle_presence() {
 
 void
 coil_driver::report_ringdown_status() {
-    sendf("indx_nozzle_presence clock=%u status=%c presence=%c decay=%u "
-          "interval=%u n_peaks=%c",
+    sendf("indx_nozzle_presence clock=%u status=%c presence=%c peak_mv=%u "
+          "n_peaks=%c",
           timer_read_time(), (uint32_t)ringdown.status,
-          (uint32_t)ringdown.presence,
-          (uint32_t)(ringdown.decay * 1000000.0f + 0.5f), ringdown.interval_ticks,
+          (uint32_t)ringdown.presence, ringdown.peak_mv,
           (uint32_t)ringdown.n_peaks);
 }

@@ -46,19 +46,19 @@ RINGDOWN_STATUS_VALID = 2
 RINGDOWN_PRESENCE = {0: "unknown", 1: "present", 2: "absent"}
 RINGDOWN_PROBE_TIMEOUT = 5.0
 RINGDOWN_PROBE_POLL_INTERVAL = 0.05
-RINGDOWN_EXCITE_SCALE_DEFAULT = 1.0
+RINGDOWN_EXCITE_SCALE_DEFAULT = 0.8
 RINGDOWN_EXCITE_SCALE_MAX = 1.0
 RINGDOWN_ZERO_MARGIN_V_DEFAULT = 1.0
-RINGDOWN_MIN_INTERVAL_DEFAULT = 40
-RINGDOWN_MAX_INTERVAL_DEFAULT = 2000
+RINGDOWN_PRESENT_PEAK_V_DEFAULT = 87.0
+RINGDOWN_ABSENT_PEAK_V_DEFAULT = 91.0
+RINGDOWN_MIN_PEAK_V_DEFAULT = 20.0
 RINGDOWN_RESPONSE = (
-    "indx_nozzle_presence clock=%u status=%c presence=%c decay=%u "
-    "interval=%u n_peaks=%c"
+    "indx_nozzle_presence clock=%u status=%c presence=%c peak_mv=%u n_peaks=%c"
 )
 RINGDOWN_SET_PARAMS_CMD = (
-    "indx_set_ringdown_params enable=%c heat_gate=%c present_decay=%u "
-    "absent_decay=%u idle_ms=%u heat_ms=%u excite_scale=%u zero_margin_v=%u "
-    "abort_on_ov=%c min_interval=%u max_interval=%u"
+    "indx_set_ringdown_params enable=%c heat_gate=%c present_peak_v=%u "
+    "absent_peak_v=%u idle_ms=%u heat_ms=%u excite_scale=%u zero_margin_v=%u "
+    "abort_on_ov=%c min_peak_v=%u"
 )
 
 FILAMENT_LOAD_THRESHOLD = 10.0
@@ -246,16 +246,28 @@ class IndxToolboardHeater:
         # LC ringdown nozzle presence (defaults off until characterised).
         self.ringdown_enable = config.getboolean("ringdown_enable", False)
         self.ringdown_heat_gate = config.getboolean("ringdown_heat_gate", False)
-        self.ringdown_present_decay = config.getfloat(
-            "ringdown_present_decay", default=0.095, above=0.0, below=1.0
+        self.ringdown_present_peak_v = config.getfloat(
+            "ringdown_present_peak_v",
+            default=RINGDOWN_PRESENT_PEAK_V_DEFAULT,
+            above=0.0,
+            maxval=200.0,
         )
-        self.ringdown_absent_decay = config.getfloat(
-            "ringdown_absent_decay", default=0.04, minval=0.0, below=1.0
+        self.ringdown_absent_peak_v = config.getfloat(
+            "ringdown_absent_peak_v",
+            default=RINGDOWN_ABSENT_PEAK_V_DEFAULT,
+            above=0.0,
+            maxval=200.0,
         )
-        if self.ringdown_present_decay <= self.ringdown_absent_decay:
+        if not (self.ringdown_present_peak_v < self.ringdown_absent_peak_v):
             raise config.error(
-                "ringdown_present_decay must be greater than ringdown_absent_decay"
+                "ringdown_present_peak_v must be less than ringdown_absent_peak_v"
             )
+        self.ringdown_min_peak_v = config.getfloat(
+            "ringdown_min_peak_v",
+            default=RINGDOWN_MIN_PEAK_V_DEFAULT,
+            minval=0.0,
+            maxval=200.0,
+        )
         self.ringdown_idle_ms = config.getint(
             "ringdown_idle_ms", default=100, minval=20, maxval=5000
         )
@@ -275,25 +287,8 @@ class IndxToolboardHeater:
             maxval=50.0,
         )
         self.ringdown_abort_on_ov = config.getboolean("ringdown_abort_on_ov", True)
-        self.ringdown_min_interval = config.getint(
-            "ringdown_min_interval",
-            default=RINGDOWN_MIN_INTERVAL_DEFAULT,
-            minval=1,
-            maxval=100000,
-        )
-        self.ringdown_max_interval = config.getint(
-            "ringdown_max_interval",
-            default=RINGDOWN_MAX_INTERVAL_DEFAULT,
-            minval=1,
-            maxval=100000,
-        )
-        if self.ringdown_max_interval <= self.ringdown_min_interval:
-            raise config.error(
-                "ringdown_max_interval must be greater than ringdown_min_interval"
-            )
         self.nozzle_presence = "unknown"
-        self.nozzle_presence_decay = 0.0
-        self.nozzle_presence_interval = 0
+        self.nozzle_presence_peak_v = 0.0
         self.nozzle_presence_n_peaks = 0
         self.nozzle_presence_status = "idle"
         self.nozzle_presence_time = 0.0
@@ -405,8 +400,7 @@ class IndxToolboardHeater:
             age = max(0.0, eventtime - self.nozzle_presence_time)
         return {
             "nozzle_presence": self.nozzle_presence,
-            "nozzle_presence_decay": self.nozzle_presence_decay,
-            "nozzle_presence_interval": self.nozzle_presence_interval,
+            "nozzle_presence_peak_v": self.nozzle_presence_peak_v,
             "nozzle_presence_n_peaks": self.nozzle_presence_n_peaks,
             "nozzle_presence_status": self.nozzle_presence_status,
             "nozzle_presence_age": age,
@@ -415,8 +409,9 @@ class IndxToolboardHeater:
             "ringdown_excite_scale": self.ringdown_excite_scale,
             "ringdown_zero_margin_v": self.ringdown_zero_margin_v,
             "ringdown_abort_on_ov": self.ringdown_abort_on_ov,
-            "ringdown_min_interval": self.ringdown_min_interval,
-            "ringdown_max_interval": self.ringdown_max_interval,
+            "ringdown_present_peak_v": self.ringdown_present_peak_v,
+            "ringdown_absent_peak_v": self.ringdown_absent_peak_v,
+            "ringdown_min_peak_v": self.ringdown_min_peak_v,
         }
 
     def build_config(self):
@@ -494,23 +489,22 @@ class IndxToolboardHeater:
                 f" time_on_first={float_to_u32(t_on_first)}"
             )
 
-        # Push LC ringdown config (including debug knobs) to the MCU at connect.
+        # Push LC ringdown config (including amplitude thresholds) to the MCU.
         mcu.add_config_cmd(
-            "indx_set_ringdown_params enable=%d heat_gate=%d present_decay=%u "
-            "absent_decay=%u idle_ms=%u heat_ms=%u excite_scale=%u "
-            "zero_margin_v=%u abort_on_ov=%d min_interval=%u max_interval=%u"
+            "indx_set_ringdown_params enable=%d heat_gate=%d present_peak_v=%u "
+            "absent_peak_v=%u idle_ms=%u heat_ms=%u excite_scale=%u "
+            "zero_margin_v=%u abort_on_ov=%d min_peak_v=%u"
             % (
                 1 if self.ringdown_enable else 0,
                 1 if self.ringdown_heat_gate else 0,
-                float_to_u32(self.ringdown_present_decay),
-                float_to_u32(self.ringdown_absent_decay),
+                float_to_u32(self.ringdown_present_peak_v),
+                float_to_u32(self.ringdown_absent_peak_v),
                 self.ringdown_idle_ms,
                 self.ringdown_heat_ms,
                 float_to_u32(self.ringdown_excite_scale),
                 float_to_u32(self.ringdown_zero_margin_v),
                 1 if self.ringdown_abort_on_ov else 0,
-                self.ringdown_min_interval,
-                self.ringdown_max_interval,
+                float_to_u32(self.ringdown_min_peak_v),
             )
         )
 
@@ -566,8 +560,7 @@ class IndxToolboardHeater:
         presence = params["presence"]
         self.nozzle_presence_status = RINGDOWN_STATUS.get(status, status)
         self.nozzle_presence = RINGDOWN_PRESENCE.get(presence, "unknown")
-        self.nozzle_presence_decay = params["decay"] / 1000000.0
-        self.nozzle_presence_interval = params["interval"]
+        self.nozzle_presence_peak_v = params["peak_mv"] / 1000.0
         self.nozzle_presence_n_peaks = params.get("n_peaks", 0)
         self.nozzle_presence_time = self.toolboard.printer.get_reactor().monotonic()
 
@@ -582,15 +575,14 @@ class IndxToolboardHeater:
             [
                 1 if self.ringdown_enable else 0,
                 1 if self.ringdown_heat_gate else 0,
-                float_to_u32(self.ringdown_present_decay),
-                float_to_u32(self.ringdown_absent_decay),
+                float_to_u32(self.ringdown_present_peak_v),
+                float_to_u32(self.ringdown_absent_peak_v),
                 self.ringdown_idle_ms,
                 self.ringdown_heat_ms,
                 float_to_u32(self.ringdown_excite_scale),
                 float_to_u32(self.ringdown_zero_margin_v),
                 1 if self.ringdown_abort_on_ov else 0,
-                self.ringdown_min_interval,
-                self.ringdown_max_interval,
+                float_to_u32(self.ringdown_min_peak_v),
             ]
         )
 
@@ -626,7 +618,7 @@ class IndxToolboardHeater:
                 mcu,
                 lambda p: meta.update(p),
                 "indx_ringdown_meta off_start=%i zero_mv=%u n_peaks=%c "
-                "status=%c",
+                "status=%c peak_mv=%u",
             )
         try:
             self.ringdown_probe_cmd.send([dump])
@@ -653,13 +645,17 @@ class IndxToolboardHeater:
                 meta_resp.unregister()
             if dump:
                 with open(RINGDOWN_WAVE_PATH, "w") as f:
-                    f.write("# off_start=%s zero_mv=%s n_peaks=%s status=%s\n"
-                            % (
-                                meta.get("off_start", ""),
-                                meta.get("zero_mv", ""),
-                                meta.get("n_peaks", ""),
-                                meta.get("status", ""),
-                            ))
+                    f.write(
+                        "# off_start=%s zero_mv=%s n_peaks=%s status=%s "
+                        "peak_mv=%s\n"
+                        % (
+                            meta.get("off_start", ""),
+                            meta.get("zero_mv", ""),
+                            meta.get("n_peaks", ""),
+                            meta.get("status", ""),
+                            meta.get("peak_mv", ""),
+                        )
+                    )
                     f.write("index,ns,counts,mv,is_peak\n")
                     peak_samples = {p[1] for p in peaks}
                     for index, ns, counts, mv in samples:
@@ -684,13 +680,11 @@ class IndxToolboardHeater:
                 "INDX ringdown probe did not start (is another probe/tune active?)"
             )
         gcmd.respond_info(
-            "INDX ringdown: presence=%s status=%s decay=%.4f interval=%u "
-            "n_peaks=%u"
+            "INDX ringdown: presence=%s status=%s peak_v=%.1f n_peaks=%u"
             % (
                 self.nozzle_presence,
                 self.nozzle_presence_status,
-                self.nozzle_presence_decay,
-                self.nozzle_presence_interval,
+                self.nozzle_presence_peak_v,
                 self.nozzle_presence_n_peaks,
             )
         )
@@ -702,20 +696,26 @@ class IndxToolboardHeater:
         self.ringdown_heat_gate = bool(
             gcmd.get_int("HEAT_GATE", int(self.ringdown_heat_gate), minval=0, maxval=1)
         )
-        self.ringdown_present_decay = gcmd.get_float(
-            "PRESENT_DECAY",
-            self.ringdown_present_decay,
+        self.ringdown_present_peak_v = gcmd.get_float(
+            "PRESENT_PEAK_V",
+            self.ringdown_present_peak_v,
             above=0.0,
-            below=1.0,
+            maxval=200.0,
         )
-        self.ringdown_absent_decay = gcmd.get_float(
-            "ABSENT_DECAY",
-            self.ringdown_absent_decay,
+        self.ringdown_absent_peak_v = gcmd.get_float(
+            "ABSENT_PEAK_V",
+            self.ringdown_absent_peak_v,
+            above=0.0,
+            maxval=200.0,
+        )
+        if not (self.ringdown_present_peak_v < self.ringdown_absent_peak_v):
+            raise gcmd.error("PRESENT_PEAK_V must be less than ABSENT_PEAK_V")
+        self.ringdown_min_peak_v = gcmd.get_float(
+            "MIN_PEAK_V",
+            self.ringdown_min_peak_v,
             minval=0.0,
-            below=1.0,
+            maxval=200.0,
         )
-        if self.ringdown_present_decay <= self.ringdown_absent_decay:
-            raise gcmd.error("PRESENT_DECAY must be greater than ABSENT_DECAY")
         self.ringdown_idle_ms = gcmd.get_int(
             "IDLE_MS", self.ringdown_idle_ms, minval=20, maxval=5000
         )
@@ -739,14 +739,6 @@ class IndxToolboardHeater:
                 "ABORT_ON_OV", int(self.ringdown_abort_on_ov), minval=0, maxval=1
             )
         )
-        self.ringdown_min_interval = gcmd.get_int(
-            "MIN_INTERVAL", self.ringdown_min_interval, minval=1, maxval=100000
-        )
-        self.ringdown_max_interval = gcmd.get_int(
-            "MAX_INTERVAL", self.ringdown_max_interval, minval=1, maxval=100000
-        )
-        if self.ringdown_max_interval <= self.ringdown_min_interval:
-            raise gcmd.error("MAX_INTERVAL must be greater than MIN_INTERVAL")
         self._send_ringdown_params()
         configfile: PrinterConfig = self.toolboard.printer.lookup_object("configfile")
         section = self.toolboard.name
@@ -759,10 +751,17 @@ class IndxToolboardHeater:
             "True" if self.ringdown_heat_gate else "False",
         )
         configfile.set(
-            section, "ringdown_present_decay", "%.5f" % self.ringdown_present_decay
+            section,
+            "ringdown_present_peak_v",
+            "%.3f" % self.ringdown_present_peak_v,
         )
         configfile.set(
-            section, "ringdown_absent_decay", "%.5f" % self.ringdown_absent_decay
+            section,
+            "ringdown_absent_peak_v",
+            "%.3f" % self.ringdown_absent_peak_v,
+        )
+        configfile.set(
+            section, "ringdown_min_peak_v", "%.3f" % self.ringdown_min_peak_v
         )
         configfile.set(section, "ringdown_idle_ms", "%d" % self.ringdown_idle_ms)
         configfile.set(section, "ringdown_heat_ms", "%d" % self.ringdown_heat_ms)
@@ -777,29 +776,22 @@ class IndxToolboardHeater:
             "ringdown_abort_on_ov",
             "True" if self.ringdown_abort_on_ov else "False",
         )
-        configfile.set(
-            section, "ringdown_min_interval", "%d" % self.ringdown_min_interval
-        )
-        configfile.set(
-            section, "ringdown_max_interval", "%d" % self.ringdown_max_interval
-        )
         gcmd.respond_info(
             "INDX ringdown params updated (enable=%s heat_gate=%s "
-            "present=%.4f absent=%.4f idle_ms=%d heat_ms=%d "
-            "excite_scale=%.3f zero_margin_v=%.2f abort_on_ov=%s "
-            "min_interval=%d max_interval=%d). Run SAVE_CONFIG to persist."
+            "present_peak_v=%.1f absent_peak_v=%.1f min_peak_v=%.1f "
+            "idle_ms=%d heat_ms=%d excite_scale=%.3f zero_margin_v=%.2f "
+            "abort_on_ov=%s). Run SAVE_CONFIG to persist."
             % (
                 self.ringdown_enable,
                 self.ringdown_heat_gate,
-                self.ringdown_present_decay,
-                self.ringdown_absent_decay,
+                self.ringdown_present_peak_v,
+                self.ringdown_absent_peak_v,
+                self.ringdown_min_peak_v,
                 self.ringdown_idle_ms,
                 self.ringdown_heat_ms,
                 self.ringdown_excite_scale,
                 self.ringdown_zero_margin_v,
                 self.ringdown_abort_on_ov,
-                self.ringdown_min_interval,
-                self.ringdown_max_interval,
             )
         )
 

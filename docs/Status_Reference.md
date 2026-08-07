@@ -350,10 +350,10 @@ The following information is available in the
   containing the keys `x`, `y`, `position` and `axis_order`.
 - `nozzle_presence`: Latest LC ringdown classification (`present`,
   `absent`, or `unknown`).
-- `nozzle_presence_decay`: Decay ratio from the last probe (float).
-- `nozzle_presence_interval`: Resonance peak interval in MCU ticks.
+- `nozzle_presence_peak_v`: Peak tank voltage from the last probe
+  (float, volts).
 - `nozzle_presence_n_peaks`: Number of local maxima found in the last
-  capture window.
+  capture window (DUMP annotation; not used for classification).
 - `nozzle_presence_status`: Probe outcome (`idle`, `running`, `valid`,
   `not_enough_peaks`, `interval_bad`, `aborted`, `overvoltage`,
   `timeout`).
@@ -362,11 +362,12 @@ The following information is available in the
 - `ringdown_enable`: Whether continuous ringdown probing is enabled.
 - `ringdown_heat_gate`: Whether heating is gated on `present`.
 - `ringdown_excite_scale`: Soft-start ON multiplier for the probe pulse
-  (max 1.0).
-- `ringdown_zero_margin_v`: ADC floor (volts) for resonance start.
+  (max 1.0; default 0.8).
+- `ringdown_zero_margin_v`: ADC floor (volts) for DUMP off_start.
 - `ringdown_abort_on_ov`: Always treated as true on the MCU; OV aborts.
-- `ringdown_min_interval` / `ringdown_max_interval`: Accepted
-  peak-interval window in MCU ticks.
+- `ringdown_present_peak_v` / `ringdown_absent_peak_v` /
+  `ringdown_min_peak_v`: Peak-amplitude classification thresholds
+  (volts). Present must be less than absent.
 
 ## led
 

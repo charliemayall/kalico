@@ -71,17 +71,18 @@ struct coil_driver {
 
     // --- Nozzle presence via LC ringdown ---
 
-    // Configure continuous probe, heat gate, and debug tuning knobs.
-    // Decays are unitless ratios (Prusa-style). Periods are milliseconds.
-    // excite_scale multiplies the soft-start ON ticks for the probe pulse
+    // Configure continuous probe, heat gate, and amplitude thresholds.
+    // present_peak_v / absent_peak_v / min_peak_v are tank volts (Bondtech:
+    // seated loads the coil so peak is lower; require present < absent).
+    // Periods are milliseconds. excite_scale multiplies soft-start ON ticks
     // (clamped to <= 1.0 so the pulse cannot exceed coil_time_on_first).
-    // zero_margin_v is the ADC floor (volts) used to find resonance start.
+    // zero_margin_v is the ADC floor used for DUMP off_start annotation.
     // abort_on_ov is accepted from the host but OV always aborts the probe.
     void
-    set_ringdown_params(bool enable, bool heat_gate, float present_decay,
-                        float absent_decay, uint32_t idle_ms, uint32_t heat_ms,
+    set_ringdown_params(bool enable, bool heat_gate, float present_peak_v,
+                        float absent_peak_v, uint32_t idle_ms, uint32_t heat_ms,
                         float excite_scale, float zero_margin_v, bool abort_on_ov,
-                        uint32_t min_interval, uint32_t max_interval);
+                        float min_peak_v);
 
     // Start a oneshot ringdown probe. Fails closed if tune is active or coil
     // timings are not set. report=true sends indx_nozzle_presence when done.
