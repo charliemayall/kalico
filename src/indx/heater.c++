@@ -406,17 +406,16 @@ command_indx_set_ringdown_params(uint32_t *args) {
     uint32_t heat_ms = args[5];
     auto excite_scale = *reinterpret_cast<float *>(&args[6]);
     auto zero_margin_v = *reinterpret_cast<float *>(&args[7]);
-    bool abort_on_ov = args[8] != 0;
-    auto min_peak_v = *reinterpret_cast<float *>(&args[9]);
+    auto min_peak_v = *reinterpret_cast<float *>(&args[8]);
     indx_heater_instance->coil_driver_inst.set_ringdown_params(
         enable, heat_gate, present_peak_v, absent_peak_v, idle_ms, heat_ms,
-        excite_scale, zero_margin_v, abort_on_ov, min_peak_v);
+        excite_scale, zero_margin_v, min_peak_v);
 }
 DECL_COMMAND(
     command_indx_set_ringdown_params,
     "indx_set_ringdown_params enable=%c heat_gate=%c present_peak_v=%u "
     "absent_peak_v=%u idle_ms=%u heat_ms=%u excite_scale=%u zero_margin_v=%u "
-    "abort_on_ov=%c min_peak_v=%u");
+    "min_peak_v=%u");
 
 extern "C" void
 command_indx_led_force_color(uint32_t *args) {

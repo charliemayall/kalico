@@ -355,8 +355,7 @@ The following information is available in the
 - `nozzle_presence_n_peaks`: Number of local maxima found in the last
   capture window (DUMP annotation; not used for classification).
 - `nozzle_presence_status`: Probe outcome (`idle`, `running`, `valid`,
-  `not_enough_peaks`, `interval_bad`, `aborted`, `overvoltage`,
-  `timeout`).
+  `not_enough_peaks`, `aborted`, `overvoltage`, `timeout`).
 - `nozzle_presence_age`: Seconds since the last completed probe, or
   None if no probe has completed yet.
 - `ringdown_enable`: Whether continuous ringdown probing is enabled.
@@ -364,7 +363,6 @@ The following information is available in the
 - `ringdown_excite_scale`: Soft-start ON multiplier for the probe pulse
   (max 1.0; default 0.8).
 - `ringdown_zero_margin_v`: ADC floor (volts) for DUMP off_start.
-- `ringdown_abort_on_ov`: Always treated as true on the MCU; OV aborts.
 - `ringdown_present_peak_v` / `ringdown_absent_peak_v` /
   `ringdown_min_peak_v`: Peak-amplitude classification thresholds
   (volts). Present must be less than absent.

@@ -12,7 +12,7 @@ enum class ringdown_status : uint8_t {
     running = 1,
     valid = 2,
     not_enough_peaks = 3,
-    interval_bad = 4,
+    // 4 was interval_bad (decay classifier); keep values stable.
     aborted = 5,
     overvoltage = 6,
     timeout = 7,
@@ -77,11 +77,11 @@ struct coil_driver {
     // Periods are milliseconds. excite_scale multiplies soft-start ON ticks
     // (clamped to <= 1.0 so the pulse cannot exceed coil_time_on_first).
     // zero_margin_v is the ADC floor used for DUMP off_start annotation.
-    // abort_on_ov is accepted from the host but OV always aborts the probe.
+    // Overvoltage mid-probe always aborts.
     void
     set_ringdown_params(bool enable, bool heat_gate, float present_peak_v,
                         float absent_peak_v, uint32_t idle_ms, uint32_t heat_ms,
-                        float excite_scale, float zero_margin_v, bool abort_on_ov,
+                        float excite_scale, float zero_margin_v,
                         float min_peak_v);
 
     // Start a oneshot ringdown probe. Fails closed if tune is active or coil

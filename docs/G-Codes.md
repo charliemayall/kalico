@@ -1120,18 +1120,17 @@ report nozzle presence (`present` / `absent` / `unknown`), `peak_v`,
 status, and `n_peaks`. Requires calibrated coil timings
 (`INDX_CALIBRATE`). Useful for characterising peak-amplitude thresholds
 and excitation before enabling continuous ringdown or the heat gate.
-Status may be `valid`, `not_enough_peaks`, `interval_bad` (unused by
-the amplitude classifier), `overvoltage`, `timeout`, or `aborted`.
-With `DUMP=1`, the MCU streams the capture buffer and detected peaks;
-the host writes `/tmp/indx_ringdown_waveform.csv` (index, ns, counts,
-mv, is_peak; header includes `peak_mv`). Use DUMP when classification
-looks wrong to inspect the waveform.
+Status may be `valid`, `not_enough_peaks`, `overvoltage`, `timeout`,
+or `aborted`. With `DUMP=1`, the MCU streams the capture buffer and
+detected peaks; the host writes `/tmp/indx_ringdown_waveform.csv`
+(index, ns, counts, mv, is_peak; header includes `peak_mv`). Use DUMP
+when classification looks wrong to inspect the waveform.
 
 #### INDX_SET_RINGDOWN_PARAMS
 `INDX_SET_RINGDOWN_PARAMS [ENABLE=0|1] [HEAT_GATE=0|1]
 [PRESENT_PEAK_V=<v>] [ABSENT_PEAK_V=<v>] [MIN_PEAK_V=<v>]
 [IDLE_MS=<ms>] [HEAT_MS=<ms>] [EXCITE_SCALE=<0.05-1.0>]
-[ZERO_MARGIN_V=<v>] [ABORT_ON_OV=0|1]`:
+[ZERO_MARGIN_V=<v>]`:
 Configure continuous ringdown probing, the optional heat gate, and
 peak-amplitude thresholds. PRESENT_PEAK_V must be less than
 ABSENT_PEAK_V (seated peak is lower than empty on Bondtech). Peak at
@@ -1139,10 +1138,9 @@ or below PRESENT_PEAK_V → present; at or above ABSENT_PEAK_V → absent;
 between → unknown. MIN_PEAK_V rejects weak captures. EXCITE_SCALE
 multiplies the soft-start ON pulse but cannot exceed 1.0 (never hotter
 than coil_time_on_first); default 0.8. Empty at 1.0 may overvoltage.
-ZERO_MARGIN_V annotates DUMP off_start. ABORT_ON_OV is accepted for
-compatibility; the MCU always aborts on overvoltage. Updated values
-are staged for SAVE_CONFIG. Keep HEAT_GATE disabled until thresholds
-are confirmed on your hardware (see INDX.md).
+ZERO_MARGIN_V annotates DUMP off_start. Overvoltage mid-probe always
+aborts. Updated values are staged for SAVE_CONFIG. Keep HEAT_GATE
+disabled until thresholds are confirmed on your hardware (see INDX.md).
 
 #### INDX_SET_CYCLE_LIMIT
 `INDX_SET_CYCLE_LIMIT LIMIT=<value>`: Limit the coil driver duty

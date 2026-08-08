@@ -347,7 +347,6 @@ enum class ringdown_phase : uint8_t {
 struct ringdown_config {
     bool enable{false};
     bool heat_gate{false};
-    bool abort_on_ov{true};
     float present_peak_v{RINGDOWN_PRESENT_PEAK_V_DEFAULT};
     float absent_peak_v{RINGDOWN_ABSENT_PEAK_V_DEFAULT};
     float min_peak_v{RINGDOWN_MIN_PEAK_V_DEFAULT};
@@ -1674,8 +1673,7 @@ void
 coil_driver::set_ringdown_params(bool enable, bool heat_gate, float present_peak_v,
                                  float absent_peak_v, uint32_t idle_ms,
                                  uint32_t heat_ms, float excite_scale,
-                                 float zero_margin_v, bool abort_on_ov,
-                                 float min_peak_v) {
+                                 float zero_margin_v, float min_peak_v) {
     if (!(present_peak_v < absent_peak_v)) {
         // Keep a hysteresis band; ignore invalid host updates.
         return;
@@ -1698,9 +1696,6 @@ coil_driver::set_ringdown_params(bool enable, bool heat_gate, float present_peak
     ringdown_cfg.zero_margin_v = zero_margin_v > 0.0f
                                      ? zero_margin_v
                                      : RINGDOWN_ZERO_MARGIN_V_DEFAULT;
-    // abort_on_ov is accepted for host compatibility but always enforced.
-    (void)abort_on_ov;
-    ringdown_cfg.abort_on_ov = true;
 }
 
 void

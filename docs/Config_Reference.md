@@ -6309,10 +6309,8 @@ mcu:
 #   than coil_time_on_first).
 #ringdown_zero_margin_v: 1.0
 #   ADC floor in volts used for DUMP off_start annotation (not for
-#   peak-amplitude classification).
-#ringdown_abort_on_ov: True
-#   Overvoltage mid-probe always aborts (status=overvoltage). Kept for
-#   config compatibility; False is ignored on the MCU.
+#   peak-amplitude classification). Overvoltage mid-probe always
+#   aborts (status=overvoltage).
 #   LC ringdown nozzle-presence detection. When ringdown_enable is
 #   True the toolboard periodically fires a soft coil impulse and
 #   classifies coupling from first-lobe peak amplitude (present /

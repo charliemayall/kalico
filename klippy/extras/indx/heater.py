@@ -36,7 +36,7 @@ RINGDOWN_STATUS = {
     1: "running",
     2: "valid",
     3: "not_enough_peaks",
-    4: "interval_bad",
+    # 4 was interval_bad (decay classifier); reserved.
     5: "aborted",
     6: "overvoltage",
     7: "timeout",
@@ -58,7 +58,7 @@ RINGDOWN_RESPONSE = (
 RINGDOWN_SET_PARAMS_CMD = (
     "indx_set_ringdown_params enable=%c heat_gate=%c present_peak_v=%u "
     "absent_peak_v=%u idle_ms=%u heat_ms=%u excite_scale=%u zero_margin_v=%u "
-    "abort_on_ov=%c min_peak_v=%u"
+    "min_peak_v=%u"
 )
 
 FILAMENT_LOAD_THRESHOLD = 10.0
@@ -286,7 +286,6 @@ class IndxToolboardHeater:
             above=0.0,
             maxval=50.0,
         )
-        self.ringdown_abort_on_ov = config.getboolean("ringdown_abort_on_ov", True)
         self.nozzle_presence = "unknown"
         self.nozzle_presence_peak_v = 0.0
         self.nozzle_presence_n_peaks = 0
@@ -408,7 +407,6 @@ class IndxToolboardHeater:
             "ringdown_heat_gate": self.ringdown_heat_gate,
             "ringdown_excite_scale": self.ringdown_excite_scale,
             "ringdown_zero_margin_v": self.ringdown_zero_margin_v,
-            "ringdown_abort_on_ov": self.ringdown_abort_on_ov,
             "ringdown_present_peak_v": self.ringdown_present_peak_v,
             "ringdown_absent_peak_v": self.ringdown_absent_peak_v,
             "ringdown_min_peak_v": self.ringdown_min_peak_v,
@@ -493,7 +491,7 @@ class IndxToolboardHeater:
         mcu.add_config_cmd(
             "indx_set_ringdown_params enable=%d heat_gate=%d present_peak_v=%u "
             "absent_peak_v=%u idle_ms=%u heat_ms=%u excite_scale=%u "
-            "zero_margin_v=%u abort_on_ov=%d min_peak_v=%u"
+            "zero_margin_v=%u min_peak_v=%u"
             % (
                 1 if self.ringdown_enable else 0,
                 1 if self.ringdown_heat_gate else 0,
@@ -503,7 +501,6 @@ class IndxToolboardHeater:
                 self.ringdown_heat_ms,
                 float_to_u32(self.ringdown_excite_scale),
                 float_to_u32(self.ringdown_zero_margin_v),
-                1 if self.ringdown_abort_on_ov else 0,
                 float_to_u32(self.ringdown_min_peak_v),
             )
         )
@@ -581,7 +578,6 @@ class IndxToolboardHeater:
                 self.ringdown_heat_ms,
                 float_to_u32(self.ringdown_excite_scale),
                 float_to_u32(self.ringdown_zero_margin_v),
-                1 if self.ringdown_abort_on_ov else 0,
                 float_to_u32(self.ringdown_min_peak_v),
             ]
         )
@@ -722,11 +718,6 @@ class IndxToolboardHeater:
             above=0.0,
             maxval=50.0,
         )
-        self.ringdown_abort_on_ov = bool(
-            gcmd.get_int(
-                "ABORT_ON_OV", int(self.ringdown_abort_on_ov), minval=0, maxval=1
-            )
-        )
         self._send_ringdown_params()
         configfile: PrinterConfig = self.toolboard.printer.lookup_object("configfile")
         section = self.toolboard.name
@@ -759,16 +750,11 @@ class IndxToolboardHeater:
         configfile.set(
             section, "ringdown_zero_margin_v", "%.3f" % self.ringdown_zero_margin_v
         )
-        configfile.set(
-            section,
-            "ringdown_abort_on_ov",
-            "True" if self.ringdown_abort_on_ov else "False",
-        )
         gcmd.respond_info(
             "INDX ringdown params updated (enable=%s heat_gate=%s "
             "present_peak_v=%.1f absent_peak_v=%.1f min_peak_v=%.1f "
-            "idle_ms=%d heat_ms=%d excite_scale=%.3f zero_margin_v=%.2f "
-            "abort_on_ov=%s). Run SAVE_CONFIG to persist."
+            "idle_ms=%d heat_ms=%d excite_scale=%.3f zero_margin_v=%.2f). "
+            "Run SAVE_CONFIG to persist."
             % (
                 self.ringdown_enable,
                 self.ringdown_heat_gate,
@@ -779,7 +765,6 @@ class IndxToolboardHeater:
                 self.ringdown_heat_ms,
                 self.ringdown_excite_scale,
                 self.ringdown_zero_margin_v,
-                self.ringdown_abort_on_ov,
             )
         )
 
