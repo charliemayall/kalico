@@ -269,7 +269,7 @@ class IndxToolboardHeater:
             maxval=200.0,
         )
         self.ringdown_idle_ms = config.getint(
-            "ringdown_idle_ms", default=100, minval=20, maxval=5000
+            "ringdown_idle_ms", default=500, minval=20, maxval=5000
         )
         self.ringdown_heat_ms = config.getint(
             "ringdown_heat_ms", default=500, minval=50, maxval=10000
@@ -602,16 +602,12 @@ class IndxToolboardHeater:
         if dump:
             wave = compat.register_response(
                 mcu,
-                lambda p: samples.append(
-                    (p["index"], p["ns"], p["counts"], p["mv"])
-                ),
+                lambda p: samples.append((p["index"], p["ns"], p["counts"], p["mv"])),
                 "indx_ringdown_wave index=%u ns=%u counts=%u mv=%u",
             )
             peak = compat.register_response(
                 mcu,
-                lambda p: peaks.append(
-                    (p["index"], p["sample"], p["counts"], p["mv"])
-                ),
+                lambda p: peaks.append((p["index"], p["sample"], p["counts"], p["mv"])),
                 "indx_ringdown_peak index=%c sample=%u counts=%u mv=%u",
             )
             meta_resp = compat.register_response(
@@ -633,9 +629,7 @@ class IndxToolboardHeater:
                     break
                 if reactor.monotonic() > deadline:
                     raise gcmd.error("INDX ringdown probe timed out")
-                reactor.pause(
-                    reactor.monotonic() + RINGDOWN_PROBE_POLL_INTERVAL
-                )
+                reactor.pause(reactor.monotonic() + RINGDOWN_PROBE_POLL_INTERVAL)
         finally:
             if wave is not None:
                 wave.unregister()
@@ -660,16 +654,10 @@ class IndxToolboardHeater:
                     peak_samples = {p[1] for p in peaks}
                     for index, ns, counts, mv in samples:
                         is_peak = 1 if index in peak_samples else 0
-                        f.write(
-                            "%d,%d,%d,%d,%d\n"
-                            % (index, ns, counts, mv, is_peak)
-                        )
+                        f.write("%d,%d,%d,%d,%d\n" % (index, ns, counts, mv, is_peak))
                     f.write("# peaks: index,sample,counts,mv\n")
                     for index, sample, counts, mv in peaks:
-                        f.write(
-                            "# peak,%d,%d,%d,%d\n"
-                            % (index, sample, counts, mv)
-                        )
+                        f.write("# peak,%d,%d,%d,%d\n" % (index, sample, counts, mv))
                 gcmd.respond_info(
                     "INDX ringdown waveform (%d samples, %d peaks) saved to %s"
                     % (len(samples), len(peaks), RINGDOWN_WAVE_PATH)
