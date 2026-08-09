@@ -65,7 +65,14 @@ indx_heater::run() {
     this->coil_driver_inst.ringdown_step(output > 0.0f);
     this->coil_driver_inst.set_duty(output);
 
-    this->state.power_sum += output;
+    // Report only power actually applied to the coil. During ringdown the PID
+    // request is latched but drive is paused; summing output would inflate the
+    // host thermal model and trip max_model_error on first heatup.
+    float report_power = output;
+    if (this->coil_driver_inst.ringdown_active()) {
+        report_power = 0.0f;
+    }
+    this->state.power_sum += report_power;
     this->state.updates_since_report += 1;
     if (timer_is_before(this->next_temperature_report, now)) {
         this->report_temperature(now);
