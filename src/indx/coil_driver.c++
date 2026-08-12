@@ -339,6 +339,7 @@ struct ringdown_state {
   void abort(ringdown_status s);
   void finish(ringdown_status s);
   void schedule_finish_or_dump(ringdown_status s);
+  void apply_presence(ringdown_status s);
   void restore_drive();
   void analyze();
   uint32_t excite_on_ticks();
@@ -348,6 +349,11 @@ static ringdown_state ringdown;
 static ringdown_config ringdown_cfg;
 static nozzle_presence last_presence{nozzle_presence::unknown};
 static uint16_t ringdown_samples[RINGDOWN_N_SAMPLES];
+
+static bool heat_gate_blocks_drive() {
+  return ringdown_cfg.enable && ringdown_cfg.heat_gate &&
+         last_presence != nozzle_presence::present;
+}
 
 // IRQ declarations and assert correct indices.
 
@@ -434,8 +440,7 @@ void coil_driver::set_duty(float duty) {
     shutdown("INDX heater started before coil timings were set");
   }
   // Soft heat gate: mute drive unless a probe has classified present.
-  if (duty != 0.0f && ringdown_cfg.enable && ringdown_cfg.heat_gate &&
-      last_presence != nozzle_presence::present) {
+  if (duty != 0.0f && heat_gate_blocks_drive()) {
     duty = 0.0f;
   }
 
@@ -1143,13 +1148,26 @@ void coil_driver::report_params() {
 // Ringdown nozzle-presence probe
 // ---------------------------------------------------------------------------
 
+void ringdown_state::apply_presence(ringdown_status s) {
+  if (s == ringdown_status::valid) {
+    last_presence = presence;
+  } else if (s != ringdown_status::running) {
+    if (presence == nozzle_presence::present)
+      presence = nozzle_presence::unknown;
+    last_presence = presence;
+  }
+}
+
 void ringdown_state::restore_drive() {
   if (burst.adc_active)
     burst.adc_restore();
   state.set_drive_ticks(saved_on_ticks, saved_on_ticks_first, saved_off_ticks);
-  state.pending_on_cycles = saved_pending_on_cycles;
+  uint32_t cycles = saved_pending_on_cycles;
+  if (heat_gate_blocks_drive())
+    cycles = 0;
+  state.pending_on_cycles = cycles;
   bool idle = DRIVE_TCC->STATUS.bit.STOP || DRIVE_TCC->STATUS.bit.FAULT0;
-  if (saved_pending_on_cycles > 0 && idle) {
+  if (cycles > 0 && idle) {
     state.arm_timer();
   }
 }
@@ -1157,9 +1175,9 @@ void ringdown_state::restore_drive() {
 void ringdown_state::abort(ringdown_status s) {
   burst.test_active = false;
   burst.burst_in_flight = false;
-  restore_drive();
   presence = nozzle_presence::unknown;
-  last_presence = nozzle_presence::unknown;
+  apply_presence(s);
+  restore_drive();
   if (phase == ringdown_phase::dump) {
     finish(s);
     return;
@@ -1182,13 +1200,7 @@ void ringdown_state::schedule_finish_or_dump(ringdown_status s) {
 
 void ringdown_state::finish(ringdown_status s) {
   status = s;
-  if (s == ringdown_status::valid) {
-    last_presence = presence;
-  } else if (s != ringdown_status::running) {
-    if (presence == nozzle_presence::present)
-      presence = nozzle_presence::unknown;
-    last_presence = presence;
-  }
+  apply_presence(s);
   if (want_report) {
     sendf("indx_nozzle_presence clock=%u status=%c presence=%c peak_mv=%u",
           timer_read_time(), (uint32_t)status, (uint32_t)presence, peak_mv);
@@ -1252,6 +1264,7 @@ void ringdown_state::analyze() {
 
   if (peak_v < ringdown_cfg.min_peak_v) {
     presence = nozzle_presence::unknown;
+    apply_presence(ringdown_status::weak_signal);
     restore_drive();
     schedule_finish_or_dump(ringdown_status::weak_signal);
     return;
@@ -1266,6 +1279,7 @@ void ringdown_state::analyze() {
     presence = nozzle_presence::unknown;
   }
 
+  apply_presence(ringdown_status::valid);
   restore_drive();
   schedule_finish_or_dump(ringdown_status::valid);
 }

@@ -1,3 +1,5 @@
+import logging
+
 from .compat import float_to_u32, poll_query_until, register_response
 
 RINGDOWN_WAVE_PATH = "/tmp/indx_ringdown_waveform.csv"
@@ -240,9 +242,11 @@ class IndxRingdown:
         self.nozzle_presence_peak_v = 0.0
         self.nozzle_presence_status = "idle"
         self.nozzle_presence_time = 0.0
-        gcode = self.toolboard.printer.lookup_object("gcode")
-        gcode.register_command("INDX_RINGDOWN_PROBE", self.cmd_RINGDOWN_PROBE)
-        gcode.register_command(
+        self.gcode = self.toolboard.printer.lookup_object("gcode")
+        self.gcode.register_command(
+            "INDX_RINGDOWN_PROBE", self.cmd_RINGDOWN_PROBE
+        )
+        self.gcode.register_command(
             "INDX_SET_RINGDOWN_PARAMS", self.cmd_SET_RINGDOWN_PARAMS
         )
         self.toolboard.mcu.register_config_callback(self.build_config)
@@ -292,6 +296,29 @@ class IndxRingdown:
         self.nozzle_presence_time = (
             self.toolboard.printer.get_reactor().monotonic()
         )
+        # Defer: MCU response handlers must not send commands on the same queue.
+        self.toolboard.printer.get_reactor().register_async_callback(
+            lambda _eventtime: self._heat_gate_block_if_needed()
+        )
+
+    def _heat_gate_block_if_needed(self):
+        # Soft gate: drop the host target and warn. MCU already mutes drive.
+        if self.heating_allowed():
+            return
+        heater = self.heater.heater
+        if heater is None:
+            return
+        eventtime = self.toolboard.printer.get_reactor().monotonic()
+        _temp, target = heater.get_temp(eventtime)
+        if not target:
+            return
+        heater.set_temp(0.0)
+        msg = (
+            "INDX ringdown heat gate: nozzle not present "
+            "(presence=%s). Heating disabled." % (self.nozzle_presence,)
+        )
+        logging.warning(msg)
+        self.gcode.respond_info(msg)
 
     def handle_nozzle_presence(self, params):
         if params["status"] == RINGDOWN_STATUS_RUNNING:
