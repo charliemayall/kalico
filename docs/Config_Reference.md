@@ -6299,7 +6299,7 @@ mcu:
 #   lower than empty (absent) on Bondtech. present must be < absent.
 #   Peak <= present → present; peak >= absent → absent; else unknown.
 #ringdown_min_peak_v: 20.0
-#   Reject captures weaker than this (status=not_enough_peaks).
+#   Reject captures weaker than this (status=weak_signal).
 #ringdown_idle_ms: 500
 #ringdown_heat_ms: 500
 #ringdown_excite_scale: 0.8

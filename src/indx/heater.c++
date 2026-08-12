@@ -399,8 +399,7 @@ command_indx_query_ringdown(uint32_t *args) {
 DECL_COMMAND(command_indx_query_ringdown, "indx_query_ringdown");
 
 // Configure continuous ringdown + optional heat gate + amplitude knobs.
-// present/absent/min peak volts and excite/zero_margin are float bits;
-// periods in ms.
+// present/absent/min peak volts and excite_scale are float bits; periods in ms.
 extern "C" void
 command_indx_set_ringdown_params(uint32_t *args) {
     if (!indx_heater_instance)
@@ -412,17 +411,15 @@ command_indx_set_ringdown_params(uint32_t *args) {
     uint32_t idle_ms = args[4];
     uint32_t heat_ms = args[5];
     auto excite_scale = *reinterpret_cast<float *>(&args[6]);
-    auto zero_margin_v = *reinterpret_cast<float *>(&args[7]);
-    auto min_peak_v = *reinterpret_cast<float *>(&args[8]);
+    auto min_peak_v = *reinterpret_cast<float *>(&args[7]);
     indx_heater_instance->coil_driver_inst.set_ringdown_params(
         enable, heat_gate, present_peak_v, absent_peak_v, idle_ms, heat_ms,
-        excite_scale, zero_margin_v, min_peak_v);
+        excite_scale, min_peak_v);
 }
 DECL_COMMAND(
     command_indx_set_ringdown_params,
     "indx_set_ringdown_params enable=%c heat_gate=%c present_peak_v=%u "
-    "absent_peak_v=%u idle_ms=%u heat_ms=%u excite_scale=%u zero_margin_v=%u "
-    "min_peak_v=%u");
+    "absent_peak_v=%u idle_ms=%u heat_ms=%u excite_scale=%u min_peak_v=%u");
 
 extern "C" void
 command_indx_led_force_color(uint32_t *args) {

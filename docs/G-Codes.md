@@ -1117,14 +1117,14 @@ stored in the sensor EEPROM. All three must be provided.
 #### INDX_RINGDOWN_PROBE
 `INDX_RINGDOWN_PROBE [DUMP=0|1]`: Fire a oneshot ringdown probe and
 report nozzle presence (`present` / `absent` / `unknown`), `peak_v`,
-status, and `n_peaks`. Requires calibrated coil timings
+and status. Requires calibrated coil timings
 (`INDX_CALIBRATE`). Useful for characterising peak-amplitude thresholds
 and excitation before enabling continuous ringdown or the heat gate.
-Status may be `valid`, `not_enough_peaks`, `overvoltage`, `timeout`,
-or `aborted`. With `DUMP=1`, the MCU streams the capture buffer and
-detected peaks; the host writes `/tmp/indx_ringdown_waveform.csv`
-(index, ns, counts, mv, is_peak; header includes `peak_mv`). Use DUMP
-when classification looks wrong to inspect the waveform.
+Status may be `valid`, `weak_signal`, `overvoltage`, `timeout`,
+or `aborted`. With `DUMP=1`, the MCU streams the capture buffer; the
+host writes `/tmp/indx_ringdown_waveform.csv` (index, ns, counts, mv,
+is_peak; header includes `peak_mv`). Use DUMP when classification
+looks wrong to inspect the waveform.
 
 #### INDX_SET_RINGDOWN_PARAMS
 `INDX_SET_RINGDOWN_PARAMS [ENABLE=0|1] [HEAT_GATE=0|1]

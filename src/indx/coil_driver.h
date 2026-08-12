@@ -11,7 +11,7 @@ enum class ringdown_status : uint8_t {
     idle = 0,
     running = 1,
     valid = 2,
-    not_enough_peaks = 3,
+    weak_signal = 3,
     aborted = 4,
     overvoltage = 5,
     timeout = 6,
@@ -75,13 +75,11 @@ struct coil_driver {
     // seated loads the coil so peak is lower; require present < absent).
     // Periods are milliseconds. excite_scale multiplies soft-start ON ticks
     // (clamped to <= 1.0 so the pulse cannot exceed coil_time_on_first).
-    // zero_margin_v is the ADC floor used for DUMP off_start annotation.
     // Overvoltage mid-probe always aborts.
     void
     set_ringdown_params(bool enable, bool heat_gate, float present_peak_v,
                         float absent_peak_v, uint32_t idle_ms, uint32_t heat_ms,
-                        float excite_scale, float zero_margin_v,
-                        float min_peak_v);
+                        float excite_scale, float min_peak_v);
 
     // Start a oneshot ringdown probe. Fails closed if tune is active or coil
     // timings are not set. report=true sends indx_nozzle_presence when done.
@@ -97,7 +95,7 @@ struct coil_driver {
     void
     ringdown_step(bool heating);
 
-    // Last latched presence classification (unknown until a valid probe).
+    // Last presence classification (unknown until a valid probe).
     nozzle_presence
     get_nozzle_presence();
 
