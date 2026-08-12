@@ -1115,7 +1115,7 @@ BRACKET_GAIN=<value>`: Override the IR sensor tuning parameters
 stored in the sensor EEPROM. All three must be provided.
 
 #### INDX_RINGDOWN_PROBE
-`INDX_RINGDOWN_PROBE [DUMP=0|1]`: Fire a oneshot LC ringdown probe and
+`INDX_RINGDOWN_PROBE [DUMP=0|1]`: Fire a oneshot ringdown probe and
 report nozzle presence (`present` / `absent` / `unknown`), `peak_v`,
 status, and `n_peaks`. Requires calibrated coil timings
 (`INDX_CALIBRATE`). Useful for characterising peak-amplitude thresholds

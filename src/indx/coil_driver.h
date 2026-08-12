@@ -68,7 +68,7 @@ struct coil_driver {
     void
     report_params();
 
-    // --- Nozzle presence via LC ringdown ---
+    // --- Nozzle presence via ringdown ---
 
     // Configure continuous probe, heat gate, and amplitude thresholds.
     // present_peak_v / absent_peak_v / min_peak_v are tank volts (Bondtech:

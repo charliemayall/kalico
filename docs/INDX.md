@@ -118,7 +118,7 @@ INDX_LOAD_FILAMENT
 Use `INDX_CLEAR_FILAMENT` to reset the filament parameters, and
 `SAVE_CONFIG` to persist any of these values.
 
-## Nozzle presence (LC ringdown)
+## Nozzle presence (ringdown)
 
 The toolboard classifies whether a steel nozzle is coupled to the
 induction coil by firing a soft single-cycle impulse and measuring the

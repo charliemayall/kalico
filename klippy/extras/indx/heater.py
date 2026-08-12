@@ -259,7 +259,7 @@ class IndxToolboardHeater:
         self.thermal_model = ThermalModel(model_params)
         self.max_model_error = config.getfloat("max_model_error", default=50.0)
 
-        # LC ringdown nozzle presence (defaults off until characterised).
+        # Ringdown nozzle presence (defaults off until characterised).
         self.ringdown_enable = config.getboolean("ringdown_enable", False)
         self.ringdown_heat_gate = config.getboolean("ringdown_heat_gate", False)
         self.ringdown_present_peak_v = config.getfloat(
@@ -527,7 +527,7 @@ class IndxToolboardHeater:
                 f" time_on_first={float_to_u32(t_on_first)}"
             )
 
-        # Push LC ringdown config (including amplitude thresholds) to the MCU.
+        # Push ringdown config (including amplitude thresholds) to the MCU.
         mcu.add_config_cmd(
             "indx_set_ringdown_params enable=%d heat_gate=%d present_peak_v=%u "
             "absent_peak_v=%u idle_ms=%u heat_ms=%u excite_scale=%u "
