@@ -1,15 +1,13 @@
 import logging
 import math
-import struct
 from collections import namedtuple
 from time import strftime
 
-from klippy.configfile import PrinterConfig
-
 from ..thermistor import CustomThermistor
 from . import calibration, compat
-from .compat import ConfigWrapper
+from .compat import ConfigWrapper, float_to_u32, poll_query_until
 from .heatsink_fan import IndxHeatsinkFan
+from .ringdown import IndxRingdown
 
 KELVIN_OFFSET = 273.15
 
@@ -29,37 +27,6 @@ COIL_TUNE_STATUS_RUNNING = 1
 COIL_TUNE_TIMEOUT = 15.0  # seconds. The MCU self-aborts a stuck tune at 10 s
 COIL_TUNE_POLL_INTERVAL = 0.2  # seconds between latched-status polls
 COIL_TUNE_WAVE_PATH = "/tmp/indx_coil_waveform.csv"
-RINGDOWN_WAVE_PATH = "/tmp/indx_ringdown_waveform.csv"
-
-# Mirrors MCU ringdown_status / nozzle_presence enums.
-RINGDOWN_STATUS = {
-    0: "idle",
-    1: "running",
-    2: "valid",
-    3: "not_enough_peaks",
-    4: "aborted",
-    5: "overvoltage",
-    6: "timeout",
-}
-RINGDOWN_STATUS_IDLE = 0
-RINGDOWN_STATUS_RUNNING = 1
-RINGDOWN_PRESENCE = {0: "unknown", 1: "present", 2: "absent"}
-RINGDOWN_PROBE_TIMEOUT = 5.0
-RINGDOWN_PROBE_POLL_INTERVAL = 0.05
-RINGDOWN_EXCITE_SCALE_DEFAULT = 0.8
-RINGDOWN_EXCITE_SCALE_MAX = 1.0
-RINGDOWN_ZERO_MARGIN_V_DEFAULT = 1.0
-RINGDOWN_PRESENT_PEAK_V_DEFAULT = 87.0
-RINGDOWN_ABSENT_PEAK_V_DEFAULT = 91.0
-RINGDOWN_MIN_PEAK_V_DEFAULT = 20.0
-RINGDOWN_RESPONSE = (
-    "indx_nozzle_presence clock=%u status=%c presence=%c peak_mv=%u n_peaks=%c"
-)
-RINGDOWN_SET_PARAMS_CMD = (
-    "indx_set_ringdown_params enable=%c heat_gate=%c present_peak_v=%u "
-    "absent_peak_v=%u idle_ms=%u heat_ms=%u excite_scale=%u zero_margin_v=%u "
-    "min_peak_v=%u"
-)
 
 FILAMENT_LOAD_THRESHOLD = 10.0
 FILAMENT_LOAD_PRIME_TIME = 5.0
@@ -80,10 +47,6 @@ NozzleTemperature = namedtuple(
         "delta_pwm_energy",
     ],
 )
-
-
-def float_to_u32(val):
-    return int(struct.unpack("!i", struct.pack("!f", val))[0])
 
 
 class IndxThermistorWrapper:
@@ -259,55 +222,6 @@ class IndxToolboardHeater:
         self.thermal_model = ThermalModel(model_params)
         self.max_model_error = config.getfloat("max_model_error", default=50.0)
 
-        # Ringdown nozzle presence (defaults off until characterised).
-        self.ringdown_enable = config.getboolean("ringdown_enable", False)
-        self.ringdown_heat_gate = config.getboolean("ringdown_heat_gate", False)
-        self.ringdown_present_peak_v = config.getfloat(
-            "ringdown_present_peak_v",
-            default=RINGDOWN_PRESENT_PEAK_V_DEFAULT,
-            above=0.0,
-            maxval=200.0,
-        )
-        self.ringdown_absent_peak_v = config.getfloat(
-            "ringdown_absent_peak_v",
-            default=RINGDOWN_ABSENT_PEAK_V_DEFAULT,
-            above=0.0,
-            maxval=200.0,
-        )
-        if not (self.ringdown_present_peak_v < self.ringdown_absent_peak_v):
-            raise config.error(
-                "ringdown_present_peak_v must be less than ringdown_absent_peak_v"
-            )
-        self.ringdown_min_peak_v = config.getfloat(
-            "ringdown_min_peak_v",
-            default=RINGDOWN_MIN_PEAK_V_DEFAULT,
-            minval=0.0,
-            maxval=200.0,
-        )
-        self.ringdown_idle_ms = config.getint(
-            "ringdown_idle_ms", default=500, minval=20, maxval=5000
-        )
-        self.ringdown_heat_ms = config.getint(
-            "ringdown_heat_ms", default=500, minval=50, maxval=10000
-        )
-        self.ringdown_excite_scale = config.getfloat(
-            "ringdown_excite_scale",
-            default=RINGDOWN_EXCITE_SCALE_DEFAULT,
-            above=0.05,
-            maxval=RINGDOWN_EXCITE_SCALE_MAX,
-        )
-        self.ringdown_zero_margin_v = config.getfloat(
-            "ringdown_zero_margin_v",
-            default=RINGDOWN_ZERO_MARGIN_V_DEFAULT,
-            above=0.0,
-            maxval=50.0,
-        )
-        self.nozzle_presence = "unknown"
-        self.nozzle_presence_peak_v = 0.0
-        self.nozzle_presence_n_peaks = 0
-        self.nozzle_presence_status = "idle"
-        self.nozzle_presence_time = 0.0
-
         self.pid_kp = config.getfloat("pid_kp", default=4.0)
         self.pid_ti = config.getfloat("pid_ti", minval=0.0, default=0.0)
         self.pid_td = config.getfloat("pid_td", minval=0.0, default=0.0)
@@ -385,6 +299,7 @@ class IndxToolboardHeater:
         self.toolboard.mcu.register_config_callback(self.build_config)
         self.temperature_callbacks = []
         self.cmd_queue = self.toolboard.mcu.alloc_command_queue()
+        self.ringdown = IndxRingdown(self, config)
 
         self.toolboard.printer.register_event_handler(
             "klippy:connect", self.handle_connect
@@ -424,31 +339,11 @@ class IndxToolboardHeater:
             "INDX_DEBUG_STREAM_RAW_IR_SENSOR",
             self.cmd_DEBUG_STREAM_RAW_IR_SENSOR,
         )
-        gcode.register_command("INDX_RINGDOWN_PROBE", self.cmd_RINGDOWN_PROBE)
-        gcode.register_command(
-            "INDX_SET_RINGDOWN_PARAMS", self.cmd_SET_RINGDOWN_PARAMS
-        )
         self.raw_ir_log_file = None
         self.raw_ir_log_sensors = []
 
     def get_ringdown_status(self, eventtime):
-        age = None
-        if self.nozzle_presence_time:
-            age = max(0.0, eventtime - self.nozzle_presence_time)
-        return {
-            "nozzle_presence": self.nozzle_presence,
-            "nozzle_presence_peak_v": self.nozzle_presence_peak_v,
-            "nozzle_presence_n_peaks": self.nozzle_presence_n_peaks,
-            "nozzle_presence_status": self.nozzle_presence_status,
-            "nozzle_presence_age": age,
-            "ringdown_enable": self.ringdown_enable,
-            "ringdown_heat_gate": self.ringdown_heat_gate,
-            "ringdown_excite_scale": self.ringdown_excite_scale,
-            "ringdown_zero_margin_v": self.ringdown_zero_margin_v,
-            "ringdown_present_peak_v": self.ringdown_present_peak_v,
-            "ringdown_absent_peak_v": self.ringdown_absent_peak_v,
-            "ringdown_min_peak_v": self.ringdown_min_peak_v,
-        }
+        return self.ringdown.get_status(eventtime)
 
     def build_config(self):
         mcu = self.toolboard.mcu
@@ -465,12 +360,6 @@ class IndxToolboardHeater:
             "indx_debug_raw_ir object=%u ambient=%u",
         )
 
-        compat.register_response(
-            mcu,
-            self.handle_nozzle_presence,
-            RINGDOWN_RESPONSE,
-        )
-
         self.cmd_debug_stream_raw_ir = mcu.lookup_command(
             "indx_debug_stream_raw_ir_sensor enable=%c", cq=self.cmd_queue
         )
@@ -482,18 +371,6 @@ class IndxToolboardHeater:
         self.query_coil_tune_cmd = mcu.lookup_query_command(
             "indx_query_coil_tune",
             "indx_coil_tune_result status=%c error=%c on_first=%u off=%u on=%u",
-            cq=self.cmd_queue,
-        )
-        self.ringdown_probe_cmd = mcu.lookup_command(
-            "indx_ringdown_probe dump=%c", cq=self.cmd_queue
-        )
-        self.query_ringdown_cmd = mcu.lookup_query_command(
-            "indx_query_ringdown",
-            RINGDOWN_RESPONSE,
-            cq=self.cmd_queue,
-        )
-        self.cmd_set_ringdown_params = mcu.lookup_command(
-            RINGDOWN_SET_PARAMS_CMD,
             cq=self.cmd_queue,
         )
         amp_per_count = mcu.get_constant_float(
@@ -527,24 +404,6 @@ class IndxToolboardHeater:
                 f" time_on_first={float_to_u32(t_on_first)}"
             )
 
-        # Push ringdown config (including amplitude thresholds) to the MCU.
-        mcu.add_config_cmd(
-            "indx_set_ringdown_params enable=%d heat_gate=%d present_peak_v=%u "
-            "absent_peak_v=%u idle_ms=%u heat_ms=%u excite_scale=%u "
-            "zero_margin_v=%u min_peak_v=%u"
-            % (
-                1 if self.ringdown_enable else 0,
-                1 if self.ringdown_heat_gate else 0,
-                float_to_u32(self.ringdown_present_peak_v),
-                float_to_u32(self.ringdown_absent_peak_v),
-                self.ringdown_idle_ms,
-                self.ringdown_heat_ms,
-                float_to_u32(self.ringdown_excite_scale),
-                float_to_u32(self.ringdown_zero_margin_v),
-                float_to_u32(self.ringdown_min_peak_v),
-            )
-        )
-
     def handle_connect(self):
         # Look for heaters that have us as their PWM output
         pheaters = self.toolboard.printer.lookup_object("heaters")
@@ -567,17 +426,12 @@ class IndxToolboardHeater:
                         "INDX heater has not been calibrated yet. "
                         "Run INDX_CALIBRATE to perform calibration."
                     )
-                if (
-                    degrees
-                    and self.ringdown_enable
-                    and self.ringdown_heat_gate
-                    and self.nozzle_presence != "present"
-                ):
+                if degrees and not self.ringdown.heating_allowed():
                     raise self.toolboard.printer.command_error(
                         "INDX ringdown heat gate: nozzle not present "
                         "(presence=%s). Seat a tool, run INDX_RINGDOWN_PROBE, "
                         "or disable ringdown_heat_gate."
-                        % (self.nozzle_presence,)
+                        % (self.ringdown.nozzle_presence,)
                     )
                 base_set_temp(degrees)
 
@@ -592,251 +446,6 @@ class IndxToolboardHeater:
                 control.profile = heater.pmgr.init_default_profile()
 
             break
-
-    def _apply_ringdown_result(self, params):
-        status = params["status"]
-        presence = params["presence"]
-        self.nozzle_presence_status = RINGDOWN_STATUS.get(status, status)
-        self.nozzle_presence = RINGDOWN_PRESENCE.get(presence, "unknown")
-        self.nozzle_presence_peak_v = params["peak_mv"] / 1000.0
-        self.nozzle_presence_n_peaks = params.get("n_peaks", 0)
-        self.nozzle_presence_time = (
-            self.toolboard.printer.get_reactor().monotonic()
-        )
-
-    def handle_nozzle_presence(self, params):
-        # Ignore in-flight running polls from background probes mid-sample.
-        if params["status"] == RINGDOWN_STATUS_RUNNING:
-            return
-        self._apply_ringdown_result(params)
-
-    def _send_ringdown_params(self):
-        self.cmd_set_ringdown_params.send(
-            [
-                1 if self.ringdown_enable else 0,
-                1 if self.ringdown_heat_gate else 0,
-                float_to_u32(self.ringdown_present_peak_v),
-                float_to_u32(self.ringdown_absent_peak_v),
-                self.ringdown_idle_ms,
-                self.ringdown_heat_ms,
-                float_to_u32(self.ringdown_excite_scale),
-                float_to_u32(self.ringdown_zero_margin_v),
-                float_to_u32(self.ringdown_min_peak_v),
-            ]
-        )
-
-    def cmd_RINGDOWN_PROBE(self, gcmd):
-        if self.coil_timings is None:
-            raise gcmd.error(
-                "INDX ringdown requires calibrated coil timings. "
-                "Run INDX_CALIBRATE first."
-            )
-        dump = gcmd.get_int("DUMP", 0, minval=0, maxval=1)
-        reactor = self.toolboard.printer.get_reactor()
-        mcu = self.toolboard.mcu
-        samples = []
-        peaks = []
-        meta = {}
-        wave = peak = meta_resp = None
-        if dump:
-            wave = compat.register_response(
-                mcu,
-                lambda p: samples.append(
-                    (p["index"], p["ns"], p["counts"], p["mv"])
-                ),
-                "indx_ringdown_wave index=%u ns=%u counts=%u mv=%u",
-            )
-            peak = compat.register_response(
-                mcu,
-                lambda p: peaks.append(
-                    (p["index"], p["sample"], p["counts"], p["mv"])
-                ),
-                "indx_ringdown_peak index=%c sample=%u counts=%u mv=%u",
-            )
-            meta_resp = compat.register_response(
-                mcu,
-                lambda p: meta.update(p),
-                "indx_ringdown_meta off_start=%i zero_mv=%u n_peaks=%c "
-                "status=%c peak_mv=%u",
-            )
-        try:
-            self.ringdown_probe_cmd.send([dump])
-            timeout = RINGDOWN_PROBE_TIMEOUT
-            if dump:
-                timeout += 5.0
-            deadline = reactor.monotonic() + timeout
-            result = None
-            while True:
-                result = self.query_ringdown_cmd.send([])
-                if result["status"] != RINGDOWN_STATUS_RUNNING:
-                    break
-                if reactor.monotonic() > deadline:
-                    raise gcmd.error("INDX ringdown probe timed out")
-                reactor.pause(
-                    reactor.monotonic() + RINGDOWN_PROBE_POLL_INTERVAL
-                )
-        finally:
-            if wave is not None:
-                wave.unregister()
-            if peak is not None:
-                peak.unregister()
-            if meta_resp is not None:
-                meta_resp.unregister()
-            if dump:
-                with open(RINGDOWN_WAVE_PATH, "w") as f:
-                    f.write(
-                        "# off_start=%s zero_mv=%s n_peaks=%s status=%s "
-                        "peak_mv=%s\n"
-                        % (
-                            meta.get("off_start", ""),
-                            meta.get("zero_mv", ""),
-                            meta.get("n_peaks", ""),
-                            meta.get("status", ""),
-                            meta.get("peak_mv", ""),
-                        )
-                    )
-                    f.write("index,ns,counts,mv,is_peak\n")
-                    peak_samples = {p[1] for p in peaks}
-                    for index, ns, counts, mv in samples:
-                        is_peak = 1 if index in peak_samples else 0
-                        f.write(
-                            "%d,%d,%d,%d,%d\n"
-                            % (index, ns, counts, mv, is_peak)
-                        )
-                    f.write("# peaks: index,sample,counts,mv\n")
-                    for index, sample, counts, mv in peaks:
-                        f.write(
-                            "# peak,%d,%d,%d,%d\n" % (index, sample, counts, mv)
-                        )
-                gcmd.respond_info(
-                    "INDX ringdown waveform (%d samples, %d peaks) saved to %s"
-                    % (len(samples), len(peaks), RINGDOWN_WAVE_PATH)
-                )
-        self._apply_ringdown_result(result)
-        if result["status"] == RINGDOWN_STATUS_IDLE:
-            raise gcmd.error(
-                "INDX ringdown probe did not start (is another probe/tune active?)"
-            )
-        gcmd.respond_info(
-            "INDX ringdown: presence=%s status=%s peak_v=%.1f n_peaks=%u"
-            % (
-                self.nozzle_presence,
-                self.nozzle_presence_status,
-                self.nozzle_presence_peak_v,
-                self.nozzle_presence_n_peaks,
-            )
-        )
-
-    def cmd_SET_RINGDOWN_PARAMS(self, gcmd):
-        self.ringdown_enable = bool(
-            gcmd.get_int(
-                "ENABLE", int(self.ringdown_enable), minval=0, maxval=1
-            )
-        )
-        self.ringdown_heat_gate = bool(
-            gcmd.get_int(
-                "HEAT_GATE", int(self.ringdown_heat_gate), minval=0, maxval=1
-            )
-        )
-        self.ringdown_present_peak_v = gcmd.get_float(
-            "PRESENT_PEAK_V",
-            self.ringdown_present_peak_v,
-            above=0.0,
-            maxval=200.0,
-        )
-        self.ringdown_absent_peak_v = gcmd.get_float(
-            "ABSENT_PEAK_V",
-            self.ringdown_absent_peak_v,
-            above=0.0,
-            maxval=200.0,
-        )
-        if not (self.ringdown_present_peak_v < self.ringdown_absent_peak_v):
-            raise gcmd.error("PRESENT_PEAK_V must be less than ABSENT_PEAK_V")
-        self.ringdown_min_peak_v = gcmd.get_float(
-            "MIN_PEAK_V",
-            self.ringdown_min_peak_v,
-            minval=0.0,
-            maxval=200.0,
-        )
-        self.ringdown_idle_ms = gcmd.get_int(
-            "IDLE_MS", self.ringdown_idle_ms, minval=20, maxval=5000
-        )
-        self.ringdown_heat_ms = gcmd.get_int(
-            "HEAT_MS", self.ringdown_heat_ms, minval=50, maxval=10000
-        )
-        self.ringdown_excite_scale = gcmd.get_float(
-            "EXCITE_SCALE",
-            self.ringdown_excite_scale,
-            above=0.05,
-            maxval=RINGDOWN_EXCITE_SCALE_MAX,
-        )
-        self.ringdown_zero_margin_v = gcmd.get_float(
-            "ZERO_MARGIN_V",
-            self.ringdown_zero_margin_v,
-            above=0.0,
-            maxval=50.0,
-        )
-        self._send_ringdown_params()
-        configfile: PrinterConfig = self.toolboard.printer.lookup_object(
-            "configfile"
-        )
-        section = self.toolboard.name
-        configfile.set(
-            section,
-            "ringdown_enable",
-            "True" if self.ringdown_enable else "False",
-        )
-        configfile.set(
-            section,
-            "ringdown_heat_gate",
-            "True" if self.ringdown_heat_gate else "False",
-        )
-        configfile.set(
-            section,
-            "ringdown_present_peak_v",
-            "%.3f" % self.ringdown_present_peak_v,
-        )
-        configfile.set(
-            section,
-            "ringdown_absent_peak_v",
-            "%.3f" % self.ringdown_absent_peak_v,
-        )
-        configfile.set(
-            section, "ringdown_min_peak_v", "%.3f" % self.ringdown_min_peak_v
-        )
-        configfile.set(
-            section, "ringdown_idle_ms", "%d" % self.ringdown_idle_ms
-        )
-        configfile.set(
-            section, "ringdown_heat_ms", "%d" % self.ringdown_heat_ms
-        )
-        configfile.set(
-            section,
-            "ringdown_excite_scale",
-            "%.4f" % self.ringdown_excite_scale,
-        )
-        configfile.set(
-            section,
-            "ringdown_zero_margin_v",
-            "%.3f" % self.ringdown_zero_margin_v,
-        )
-        gcmd.respond_info(
-            "INDX ringdown params updated (enable=%s heat_gate=%s "
-            "present_peak_v=%.1f absent_peak_v=%.1f min_peak_v=%.1f "
-            "idle_ms=%d heat_ms=%d excite_scale=%.3f zero_margin_v=%.2f). "
-            "Run SAVE_CONFIG to persist."
-            % (
-                self.ringdown_enable,
-                self.ringdown_heat_gate,
-                self.ringdown_present_peak_v,
-                self.ringdown_absent_peak_v,
-                self.ringdown_min_peak_v,
-                self.ringdown_idle_ms,
-                self.ringdown_heat_ms,
-                self.ringdown_excite_scale,
-                self.ringdown_zero_margin_v,
-            )
-        )
 
     def apply_pid_params(self):
         self.cmd_set_control_params.send(
@@ -1107,15 +716,17 @@ class IndxToolboardHeater:
         )
         try:
             self.tune_coil_cmd.send([int(capture)])
-            deadline = reactor.monotonic() + COIL_TUNE_TIMEOUT
-            while True:
-                result = self.query_coil_tune_cmd.send([])
-                if result["status"] != COIL_TUNE_STATUS_RUNNING:
-                    break
-                if reactor.monotonic() > deadline:
-                    self.coil_timings = None
-                    raise gcmd.error("INDX coil driver tuning timed out")
-                reactor.pause(reactor.monotonic() + COIL_TUNE_POLL_INTERVAL)
+            result = poll_query_until(
+                reactor,
+                self.query_coil_tune_cmd,
+                "status",
+                COIL_TUNE_STATUS_RUNNING,
+                COIL_TUNE_TIMEOUT,
+                COIL_TUNE_POLL_INTERVAL,
+            )
+            if result is None:
+                self.coil_timings = None
+                raise gcmd.error("INDX coil driver tuning timed out")
         finally:
             wave.unregister()
             finished.unregister()
