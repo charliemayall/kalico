@@ -154,8 +154,8 @@ and should be checked on your head before enabling the heat gate:
    refuses to heat unless presence is `present`.
 
 Enable continuous probing with `ringdown_enable: True` (about every
-100 ms while idle and 500 ms while heating). Soft probes briefly pause
-heating; keep periods conservative.
+500 ms while idle and while heating by default). Soft probes briefly
+pause heating; keep periods conservative.
 
 See the [G-Code reference](G-Codes.md#indx) for the full list of INDX
 commands and their parameters.

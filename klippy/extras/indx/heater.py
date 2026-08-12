@@ -5,6 +5,8 @@ import struct
 from collections import namedtuple
 from time import strftime
 
+from klippy.configfile import PrinterConfig
+
 from ..thermistor import CustomThermistor
 from . import calibration, compat
 from .compat import ConfigWrapper
@@ -36,13 +38,12 @@ RINGDOWN_STATUS = {
     1: "running",
     2: "valid",
     3: "not_enough_peaks",
-    # 4 was interval_bad (decay classifier); reserved.
-    5: "aborted",
-    6: "overvoltage",
-    7: "timeout",
+    4: "aborted",
+    5: "overvoltage",
+    6: "timeout",
 }
+RINGDOWN_STATUS_IDLE = 0
 RINGDOWN_STATUS_RUNNING = 1
-RINGDOWN_STATUS_VALID = 2
 RINGDOWN_PRESENCE = {0: "unknown", 1: "present", 2: "absent"}
 RINGDOWN_PROBE_TIMEOUT = 5.0
 RINGDOWN_PROBE_POLL_INTERVAL = 0.05
@@ -389,7 +390,9 @@ class IndxToolboardHeater:
             self.cmd_DEBUG_STREAM_RAW_IR_SENSOR,
         )
         gcode.register_command("INDX_RINGDOWN_PROBE", self.cmd_RINGDOWN_PROBE)
-        gcode.register_command("INDX_SET_RINGDOWN_PARAMS", self.cmd_SET_RINGDOWN_PARAMS)
+        gcode.register_command(
+            "INDX_SET_RINGDOWN_PARAMS", self.cmd_SET_RINGDOWN_PARAMS
+        )
         self.raw_ir_log_file = None
         self.raw_ir_log_sensors = []
 
@@ -448,6 +451,18 @@ class IndxToolboardHeater:
         )
         self.ringdown_probe_cmd = mcu.lookup_command(
             "indx_ringdown_probe dump=%c", cq=self.cmd_queue
+        )
+        self.query_ringdown_cmd = mcu.lookup_query_command(
+            "indx_query_ringdown",
+            RINGDOWN_RESPONSE,
+            cq=self.cmd_queue,
+        )
+        self.cmd_set_ringdown_params = mcu.lookup_command(
+            RINGDOWN_SET_PARAMS_CMD,
+            cq=self.cmd_queue,
+        )
+        amp_per_count = mcu.get_constant_float(
+            "INDX_CURRENT_SENSE_AMP_PER_COUNT"
         )
         self.query_ringdown_cmd = mcu.lookup_query_command(
             "indx_query_ringdown",
@@ -536,7 +551,8 @@ class IndxToolboardHeater:
                     raise self.toolboard.printer.command_error(
                         "INDX ringdown heat gate: nozzle not present "
                         "(presence=%s). Seat a tool, run INDX_RINGDOWN_PROBE, "
-                        "or disable ringdown_heat_gate." % (self.nozzle_presence,)
+                        "or disable ringdown_heat_gate."
+                        % (self.nozzle_presence,)
                     )
                 base_set_temp(degrees)
 
@@ -559,7 +575,9 @@ class IndxToolboardHeater:
         self.nozzle_presence = RINGDOWN_PRESENCE.get(presence, "unknown")
         self.nozzle_presence_peak_v = params["peak_mv"] / 1000.0
         self.nozzle_presence_n_peaks = params.get("n_peaks", 0)
-        self.nozzle_presence_time = self.toolboard.printer.get_reactor().monotonic()
+        self.nozzle_presence_time = (
+            self.toolboard.printer.get_reactor().monotonic()
+        )
 
     def handle_nozzle_presence(self, params):
         # Ignore in-flight running polls from background probes mid-sample.
@@ -598,12 +616,16 @@ class IndxToolboardHeater:
         if dump:
             wave = compat.register_response(
                 mcu,
-                lambda p: samples.append((p["index"], p["ns"], p["counts"], p["mv"])),
+                lambda p: samples.append(
+                    (p["index"], p["ns"], p["counts"], p["mv"])
+                ),
                 "indx_ringdown_wave index=%u ns=%u counts=%u mv=%u",
             )
             peak = compat.register_response(
                 mcu,
-                lambda p: peaks.append((p["index"], p["sample"], p["counts"], p["mv"])),
+                lambda p: peaks.append(
+                    (p["index"], p["sample"], p["counts"], p["mv"])
+                ),
                 "indx_ringdown_peak index=%c sample=%u counts=%u mv=%u",
             )
             meta_resp = compat.register_response(
@@ -625,7 +647,9 @@ class IndxToolboardHeater:
                     break
                 if reactor.monotonic() > deadline:
                     raise gcmd.error("INDX ringdown probe timed out")
-                reactor.pause(reactor.monotonic() + RINGDOWN_PROBE_POLL_INTERVAL)
+                reactor.pause(
+                    reactor.monotonic() + RINGDOWN_PROBE_POLL_INTERVAL
+                )
         finally:
             if wave is not None:
                 wave.unregister()
@@ -650,16 +674,21 @@ class IndxToolboardHeater:
                     peak_samples = {p[1] for p in peaks}
                     for index, ns, counts, mv in samples:
                         is_peak = 1 if index in peak_samples else 0
-                        f.write("%d,%d,%d,%d,%d\n" % (index, ns, counts, mv, is_peak))
+                        f.write(
+                            "%d,%d,%d,%d,%d\n"
+                            % (index, ns, counts, mv, is_peak)
+                        )
                     f.write("# peaks: index,sample,counts,mv\n")
                     for index, sample, counts, mv in peaks:
-                        f.write("# peak,%d,%d,%d,%d\n" % (index, sample, counts, mv))
+                        f.write(
+                            "# peak,%d,%d,%d,%d\n" % (index, sample, counts, mv)
+                        )
                 gcmd.respond_info(
                     "INDX ringdown waveform (%d samples, %d peaks) saved to %s"
                     % (len(samples), len(peaks), RINGDOWN_WAVE_PATH)
                 )
         self._apply_ringdown_result(result)
-        if result["status"] == 0:  # idle - command never started
+        if result["status"] == RINGDOWN_STATUS_IDLE:
             raise gcmd.error(
                 "INDX ringdown probe did not start (is another probe/tune active?)"
             )
@@ -675,10 +704,14 @@ class IndxToolboardHeater:
 
     def cmd_SET_RINGDOWN_PARAMS(self, gcmd):
         self.ringdown_enable = bool(
-            gcmd.get_int("ENABLE", int(self.ringdown_enable), minval=0, maxval=1)
+            gcmd.get_int(
+                "ENABLE", int(self.ringdown_enable), minval=0, maxval=1
+            )
         )
         self.ringdown_heat_gate = bool(
-            gcmd.get_int("HEAT_GATE", int(self.ringdown_heat_gate), minval=0, maxval=1)
+            gcmd.get_int(
+                "HEAT_GATE", int(self.ringdown_heat_gate), minval=0, maxval=1
+            )
         )
         self.ringdown_present_peak_v = gcmd.get_float(
             "PRESENT_PEAK_V",
@@ -719,10 +752,14 @@ class IndxToolboardHeater:
             maxval=50.0,
         )
         self._send_ringdown_params()
-        configfile: PrinterConfig = self.toolboard.printer.lookup_object("configfile")
+        configfile: PrinterConfig = self.toolboard.printer.lookup_object(
+            "configfile"
+        )
         section = self.toolboard.name
         configfile.set(
-            section, "ringdown_enable", "True" if self.ringdown_enable else "False"
+            section,
+            "ringdown_enable",
+            "True" if self.ringdown_enable else "False",
         )
         configfile.set(
             section,
@@ -742,13 +779,21 @@ class IndxToolboardHeater:
         configfile.set(
             section, "ringdown_min_peak_v", "%.3f" % self.ringdown_min_peak_v
         )
-        configfile.set(section, "ringdown_idle_ms", "%d" % self.ringdown_idle_ms)
-        configfile.set(section, "ringdown_heat_ms", "%d" % self.ringdown_heat_ms)
         configfile.set(
-            section, "ringdown_excite_scale", "%.4f" % self.ringdown_excite_scale
+            section, "ringdown_idle_ms", "%d" % self.ringdown_idle_ms
         )
         configfile.set(
-            section, "ringdown_zero_margin_v", "%.3f" % self.ringdown_zero_margin_v
+            section, "ringdown_heat_ms", "%d" % self.ringdown_heat_ms
+        )
+        configfile.set(
+            section,
+            "ringdown_excite_scale",
+            "%.4f" % self.ringdown_excite_scale,
+        )
+        configfile.set(
+            section,
+            "ringdown_zero_margin_v",
+            "%.3f" % self.ringdown_zero_margin_v,
         )
         gcmd.respond_info(
             "INDX ringdown params updated (enable=%s heat_gate=%s "

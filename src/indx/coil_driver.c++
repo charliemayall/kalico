@@ -332,7 +332,7 @@ static constexpr float RINGDOWN_EXCITE_SCALE_MAX = 1.0f;
 static constexpr float RINGDOWN_PRESENT_PEAK_V_DEFAULT = 87.0f;
 static constexpr float RINGDOWN_ABSENT_PEAK_V_DEFAULT = 91.0f;
 static constexpr float RINGDOWN_MIN_PEAK_V_DEFAULT = 20.0f;
-static constexpr uint32_t RINGDOWN_IDLE_MS_DEFAULT = 100;
+static constexpr uint32_t RINGDOWN_IDLE_MS_DEFAULT = 500;
 static constexpr uint32_t RINGDOWN_HEAT_MS_DEFAULT = 500;
 
 enum class ringdown_phase : uint8_t {

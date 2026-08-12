@@ -6300,7 +6300,7 @@ mcu:
 #   Peak <= present → present; peak >= absent → absent; else unknown.
 #ringdown_min_peak_v: 20.0
 #   Reject captures weaker than this (status=not_enough_peaks).
-#ringdown_idle_ms: 100
+#ringdown_idle_ms: 500
 #ringdown_heat_ms: 500
 #ringdown_excite_scale: 0.8
 #   Multiplier on calibrated soft-start ON ticks for the probe pulse

@@ -12,10 +12,9 @@ enum class ringdown_status : uint8_t {
     running = 1,
     valid = 2,
     not_enough_peaks = 3,
-    // 4 was interval_bad (decay classifier); keep values stable.
-    aborted = 5,
-    overvoltage = 6,
-    timeout = 7,
+    aborted = 4,
+    overvoltage = 5,
+    timeout = 6,
 };
 
 enum class nozzle_presence : uint8_t {
