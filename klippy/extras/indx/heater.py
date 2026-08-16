@@ -535,6 +535,8 @@ class IndxToolboardHeater:
 
         current_target_temp = self.cur_target_temp()
         is_active = current_target_temp is not None
+        if self.last_report is None:
+            self.thermal_model.force_temp(nozzle_temp)
 
         power = params["power"] / 1000000.0
         if not is_active:
@@ -633,6 +635,8 @@ class IndxToolboardHeater:
         self.supply_voltage = vin
 
     def set_target_temp(self, target_temp):
+        if self.toolboard.mcu.non_critical_disconnected:
+            return
         if target_temp == 0.0:
             target_temp = float("nan")
         self.cmd_set_target.send([float_to_u32(target_temp + KELVIN_OFFSET)])

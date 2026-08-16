@@ -89,6 +89,10 @@ class Fan:
             "gcode:request_restart", self._handle_request_restart
         )
         self.printer.register_event_handler("klippy:ready", self._handle_ready)
+        self.printer.register_event_handler(
+            self.mcu_fan.get_mcu().get_non_critical_reconnect_event_name(),
+            self._handle_reconnect,
+        )
 
     def get_mcu(self):
         return self.mcu_fan.get_mcu()
@@ -140,6 +144,13 @@ class Fan:
     def _handle_ready(self):
         if self.initial_speed:
             self.set_speed_from_command(self.initial_speed)
+
+    def _handle_reconnect(self):
+        if self.mcu_fan.get_mcu().non_critical_disconnected:
+            return
+        value = self.last_req_value
+        self.last_fan_value = -1.0
+        self.set_speed(value)
 
     def get_status(self, eventtime):
         tachometer_status = self.tachometer.get_status(eventtime)

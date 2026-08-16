@@ -1,6 +1,7 @@
 from klippy import mcu as mcu_mod
 
 RECON_EVENT = "danger:non_critical_mcu_test:reconnected"
+DISCON_EVENT = "danger:non_critical_mcu_test:disconnected"
 
 
 class _FakeSerial:
@@ -37,6 +38,12 @@ class _FakeReactor:
     def pause(self, waketime):
         pass
 
+    def update_timer(self, timer, waketime):
+        pass
+
+    def register_timer(self, callback, waketime=None):
+        return object()
+
 
 class _FakeCommand:
     def __init__(self, response=None):
@@ -65,6 +72,7 @@ def _make_mcu(is_shutdown_response=0):
     mcu._reset_cmd = None
     mcu._config_reset_cmd = None
     mcu._non_critical_reconnect_event_name = RECON_EVENT
+    mcu._non_critical_disconnect_event_name = DISCON_EVENT
     # Fake out the recon path boundaries; recon_mcu itself is the unit
     mcu._mcu_identify = lambda: True
     mcu._connect = lambda: None
@@ -127,3 +135,31 @@ def test_successful_recon_clears_stale_shutdown_flag():
     assert mcu._is_shutdown is False
     assert mcu.non_critical_disconnected is False
     assert mcu._printer.events == [RECON_EVENT]
+    assert mcu._get_status_info["non_critical_disconnected"] is False
+
+
+def test_disconnect_sets_status_flag():
+    mcu = _make_mcu()
+    mcu.non_critical_disconnected = False
+    mcu.non_critical_recon_timer = object()
+    mcu.gcode = type("G", (), {"respond_info": lambda *a, **k: None})()
+    mcu.handle_non_critical_disconnect()
+    assert mcu.non_critical_disconnected is True
+    assert mcu._get_status_info["non_critical_disconnected"] is True
+    assert mcu._printer.events == [DISCON_EVENT]
+
+
+def test_enable_non_critical_registers_timer():
+    mcu = _make_mcu()
+    mcu.is_non_critical = False
+    timers = []
+
+    def register_timer(cb):
+        timers.append(cb)
+        return object()
+
+    mcu._reactor.register_timer = register_timer
+    mcu.enable_non_critical()
+    assert mcu.is_non_critical is True
+    assert timers == [mcu.non_critical_recon_event]
+    assert mcu._get_status_info["non_critical_disconnected"] is False

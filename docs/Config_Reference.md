@@ -6234,6 +6234,16 @@ mcu:
 #   Name of the part cooling fan object on the tool. The fan speed is
 #   used by the thermal model to compensate for part cooling airflow.
 #   Set to an empty string to disable.
+#pause_on_disconnect: True
+#   If True, a lost connection to the toolboard MCU pauses the print
+#   (without an extruder retract) and waits for the MCU to reconnect
+#   instead of shutting down the printer. Resume is left to the user
+#   after the nozzle is back at temperature. The default is True.
+#disconnect_z_hop: 5.0
+#   Z hop (mm) applied after a disconnect pause so the nozzle is not
+#   left sitting on the part. Set 0 to disable. The default is 5.0.
+#disconnect_z_hop_speed: 15.0
+#   Speed (mm/s) for disconnect_z_hop. The default is 15.0.
 #pid_kp: 4.0
 #pid_ti: 0.0
 #pid_td: 0.0

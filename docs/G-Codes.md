@@ -1556,7 +1556,8 @@ for restoration upon resume.
 `RESUME [VELOCITY=<value>]`: Resumes the print from a pause, first
 restoring the previously captured position. The VELOCITY parameter
 determines the speed at which the tool should return to the original
-captured position.
+captured position. Resume is refused while the INDX toolboard MCU is
+disconnected.
 
 #### CLEAR_PAUSE
 `CLEAR_PAUSE`: Clears the current paused state without resuming the

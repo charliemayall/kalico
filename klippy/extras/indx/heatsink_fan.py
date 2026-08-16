@@ -58,6 +58,9 @@ class IndxHeatsinkFan:
         self.heaters.append(heater)
 
     def check_event(self, eventtime):
+        if self.toolboard.mcu.non_critical_disconnected:
+            self.active_stopped_count = 0
+            return eventtime + 1.0
         activate = False
 
         for heater in self.heaters:

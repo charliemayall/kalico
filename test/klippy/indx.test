@@ -10,3 +10,4 @@ INDX_FORCE_BRACKET_TEMP TEMP=25
 
 # Verify the toolboard status is exported
 ASSERT TEST='{printer.indx.last_dock_measurement is none}'
+ASSERT TEST='{not printer.indx.mcu_disconnected}'

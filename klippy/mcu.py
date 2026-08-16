@@ -545,9 +545,7 @@ class MCU_digital_out:
 
     def set_digital(self, print_time, value):
         if self._mcu.non_critical_disconnected:
-            raise self._printer.command_error(
-                f"Cannot set pin on disconnected MCU '{self._mcu.get_name()}'"
-            )
+            return
         clock = self._mcu.print_time_to_clock(print_time)
         self._set_cmd.send(
             [self._oid, clock, (not not value) ^ self._invert],
@@ -663,6 +661,8 @@ class MCU_pwm:
         )
 
     def set_pwm(self, print_time, value):
+        if self._mcu.non_critical_disconnected:
+            return
         if self._invert:
             value = 1.0 - value
         v = int(max(0.0, min(1.0, value)) * self._pwm_max + 0.5)
@@ -987,6 +987,7 @@ class MCU:
 
     def handle_non_critical_disconnect(self):
         self.non_critical_disconnected = True
+        self._get_status_info["non_critical_disconnected"] = True
         self._clocksync.disconnect()
         self._disconnect()
         self._reactor.update_timer(
@@ -1108,6 +1109,7 @@ class MCU:
             self._is_shutdown = False
             self.reset_to_initial_state()
             self.non_critical_disconnected = False
+            self._get_status_info["non_critical_disconnected"] = False
             self._connect()
         except Exception:
             logging.exception(
@@ -1382,6 +1384,20 @@ class MCU:
 
     def get_non_critical_disconnect_event_name(self):
         return self._non_critical_disconnect_event_name
+
+    def enable_non_critical(self):
+        # Allow later disconnects without shutting down the printer.
+        # Call after the initial connect so a missing board still fails
+        # startup.
+        if self.get_name() == "mcu":
+            raise error("Primary MCU cannot be marked as non-critical!")
+        if self.is_non_critical:
+            return
+        self.is_non_critical = True
+        self.non_critical_recon_timer = self._reactor.register_timer(
+            self.non_critical_recon_event
+        )
+        self._get_status_info.setdefault("non_critical_disconnected", False)
 
     def register_response(self, cb, msg, oid=None):
         self._serial.register_response(cb, msg, oid)

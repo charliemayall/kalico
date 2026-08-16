@@ -1,5 +1,6 @@
 from ..homing import Homing
 from .compat import ConfigWrapper
+from .disconnect import IndxMcuDisconnect
 from .heater import IndxToolboardHeater
 
 
@@ -90,6 +91,7 @@ class IndxToolboard:
 
         self.heater = IndxToolboardHeater(self, config)
         self.dock_measurement = IndxDockMeasurement(self)
+        self.mcu_disconnect = IndxMcuDisconnect(self, config)
 
         gcode = printer.lookup_object("gcode")
         gcode.register_command("INDX_LED_FORCE_COLOR", self.cmd_LED_FORCE_COLOR)
@@ -97,7 +99,8 @@ class IndxToolboard:
 
     def get_status(self, eventtime):
         status = {
-            "last_dock_measurement": self.dock_measurement.last_dock_measurement
+            "last_dock_measurement": self.dock_measurement.last_dock_measurement,
+            "mcu_disconnected": self.mcu.non_critical_disconnected,
         }
         status.update(self.heater.get_ringdown_status(eventtime))
         return status

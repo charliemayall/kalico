@@ -80,6 +80,13 @@ heatsink fan is managed by the toolboard module itself: it turns on
 whenever the heater is active, the nozzle is hot or a stepper on the
 toolboard is enabled, and a blocked fan triggers a shutdown.
 
+If the toolboard MCU drops off USB or CAN mid-print, Kalico pauses the
+print and retries the connection instead of shutting the whole machine
+down. The pause does not retract (the extruder lives on that MCU).
+After the toolboard returns, wait for the nozzle to recover and press
+Resume. Set `pause_on_disconnect: False` on `[indx]` to keep the
+original shutdown-on-timeout behaviour.
+
 ## Calibration
 
 The heater will not heat until it has been calibrated. With the nozzle

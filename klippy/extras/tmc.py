@@ -213,6 +213,8 @@ class TMCErrorCheck:
             return
 
     def _do_periodic_check(self, eventtime):
+        if self.mcu_tmc.get_mcu().non_critical_disconnected:
+            return eventtime + 1.0
         try:
             self._query_register(self.drv_status_reg_info)
             if self.gstat_reg_info is not None:
@@ -400,6 +402,10 @@ class TMCCommandHelper:
         )
         self.printer.register_event_handler(
             "klippy:connect", self._handle_connect
+        )
+        self.printer.register_event_handler(
+            self.mcu_tmc.get_mcu().get_non_critical_reconnect_event_name(),
+            self._handle_reconnect,
         )
         # Register commands
         gcode = self.printer.lookup_object("gcode")
@@ -593,6 +599,8 @@ class TMCCommandHelper:
     def _handle_stepper_enable(self, print_time, is_enable):
         def enable_disable_cb(eventtime):
             try:
+                if self.mcu_tmc.get_mcu().non_critical_disconnected:
+                    return
                 with self.enable_mutex:
                     if is_enable:
                         self._do_enable(print_time)
@@ -638,6 +646,23 @@ class TMCCommandHelper:
                 self._init_registers()
         except self.printer.command_error as e:
             logging.info("TMC %s failed to init: %s", self.name, str(e))
+
+    def _handle_reconnect(self):
+        if self.mcu_tmc.get_mcu().non_critical_disconnected:
+            return
+        try:
+            enable_line = self.stepper_enable.lookup_enable(self.stepper_name)
+            if enable_line.is_motor_enabled():
+                print_time = self.printer.lookup_object(
+                    "toolhead"
+                ).get_last_move_time()
+                self._do_enable(print_time)
+            else:
+                self._init_registers()
+        except self.printer.command_error as e:
+            logging.info(
+                "TMC %s failed to init after reconnect: %s", self.name, str(e)
+            )
 
     # get_status information export
     def get_status(self, eventtime=None):

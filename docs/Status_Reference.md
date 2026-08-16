@@ -348,6 +348,8 @@ The following information is available in the
 - `last_dock_measurement`: The result of the last INDX_DOCK_MEASURE
   command (None if no measurement has been taken). It is a dictionary
   containing the keys `x`, `y`, `position` and `axis_order`.
+- `mcu_disconnected`: True if the toolboard MCU is currently
+  disconnected (and the print may be paused waiting for reconnect).
 - `nozzle_presence`: Latest ringdown classification (`present`,
   `absent`, or `unknown`).
 - `nozzle_presence_peak_v`: Peak tank voltage from the last probe

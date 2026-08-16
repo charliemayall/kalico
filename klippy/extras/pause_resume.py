@@ -14,6 +14,7 @@ class PauseResume:
         self.is_paused = False
         self.sd_paused = False
         self.pause_command_sent = False
+        self.block_resume_reason = None
         self.printer.register_event_handler(
             "klippy:connect", self.handle_connect
         )
@@ -99,6 +100,8 @@ class PauseResume:
         if not self.is_paused:
             gcmd.respond_info("Print is not paused, resume aborted")
             return
+        if self.block_resume_reason:
+            raise gcmd.error(self.block_resume_reason)
         velocity = gcmd.get_float("VELOCITY", self.recover_velocity)
         self.gcode.run_script_from_command(
             "RESTORE_GCODE_STATE NAME=PAUSE_STATE MOVE=1 MOVE_SPEED=%.4f"
@@ -113,6 +116,7 @@ class PauseResume:
 
     def cmd_CLEAR_PAUSE(self, gcmd):
         self.is_paused = self.pause_command_sent = False
+        self.block_resume_reason = None
 
     cmd_CANCEL_PRINT_help = "Cancel the current print"
 

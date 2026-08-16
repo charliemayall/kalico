@@ -51,7 +51,17 @@ class HeaterCheck:
             reactor = self.printer.get_reactor()
             reactor.update_timer(self.check_timer, reactor.NEVER)
 
+    def _mcu_disconnected(self):
+        mcu_pwm = getattr(self.heater, "mcu_pwm", None)
+        if mcu_pwm is None or not hasattr(mcu_pwm, "get_mcu"):
+            return False
+        return bool(mcu_pwm.get_mcu().non_critical_disconnected)
+
     def check_event(self, eventtime):
+        if self._mcu_disconnected():
+            self.error = 0.0
+            self.approaching_target = self.starting_approach = False
+            return eventtime + 1.0
         temp, target = self.heater.get_temp(eventtime)
         if temp >= target - self.hysteresis or target <= 0.0:
             # Temperature near target - reset checks
